@@ -24,6 +24,8 @@ export class Item {
     this.owner = config.owner || null; // who placed this (for traps)
     this.trapDamage = config.trapDamage || 40;
     this.isCut = false; // for trees
+    this.hasGold = config.hasGold || false; // for rocks
+    this.isBroken = false; // for rocks
     this.group = new THREE.Group();
     this._build();
   }
@@ -118,6 +120,14 @@ export class Item {
       this.mesh.scale.set(50, 50, 1);
       this.mesh.position.z = 1.2;
       this.group.add(this.mesh);
+    } else if (this.type === 'rock') {
+      this.radius = 14;
+      const tex = getTexture(this.hasGold ? '/images/gold.png' : '/images/rock.png');
+      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+      this.mesh = new THREE.Sprite(mat);
+      this.mesh.scale.set(60, 60, 1);
+      this.mesh.position.z = 1.2;
+      this.group.add(this.mesh);
     } else if (this.type === 'trap') {
       this.radius = 12;
       const tex = getTexture('/images/trap.png');
@@ -162,6 +172,11 @@ export class Item {
     const tex = getTexture('/images/world/tree_cut.png');
     this.mesh.material.map = tex;
     this.mesh.material.needsUpdate = true;
+  }
+
+  breakRock() {
+    if (this.type !== 'rock' || this.isBroken) return;
+    this.isBroken = true;
   }
 
   addToScene(scene) {

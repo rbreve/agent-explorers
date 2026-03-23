@@ -22,7 +22,7 @@ app.get('/api/config', (req, res) => {
 
 // LLM proxy endpoint (OpenRouter + Ollama)
 app.post('/api/llm', async (req, res) => {
-  const { model, messages, temperature, provider, ollamaUrl, apiKey: clientKey } = req.body;
+  const { model, messages, temperature, provider, ollamaUrl, agentName, apiKey: clientKey } = req.body;
 
   try {
     let url, headers, bodyObj;
@@ -81,22 +81,27 @@ app.post('/api/llm', async (req, res) => {
           finish_reason: data.done ? 'stop' : 'length',
         }],
       };
+      if (!data.message.content) {
+        console.error(`[LLM_ERROR][${agentName || '?'}][ollama/${model}] Empty content. Full response: ${JSON.stringify(data)}`);
+      }
       if (DEBUG_LLM_RESPONSE) {
-        console.log(`[LLM ollama/${model}] ${data.message.content || JSON.stringify(data)}`);
+        console.log(`[LOG_LLM_OUTPUT][${agentName || '?'}][ollama/${model}] ${data.message.content || JSON.stringify(data)}`);
       }
       return res.json(normalized);
     }
 
+    const content = data.choices?.[0]?.message?.content;
     if (data.error) {
-      console.error(`LLM API error [${provider}/${model}]:`, JSON.stringify(data.error));
+      console.error(`[LLM_ERROR][${agentName || '?'}][${provider}/${model}] ${JSON.stringify(data.error)}`);
+    } else if (!content) {
+      console.error(`[LLM_ERROR][${agentName || '?'}][${provider}/${model}] Empty content. Full response: ${JSON.stringify(data)}`);
     }
     if (DEBUG_LLM_RESPONSE) {
-      const content = data.choices?.[0]?.message?.content;
-      console.log(`[LLM ${provider}/${model}] ${content || JSON.stringify(data)}`);
+      console.log(`[LOG_LLM_OUTPUT][${agentName || '?'}][${provider}/${model}] ${content || JSON.stringify(data)}`);
     }
     res.json(data);
   } catch (err) {
-    console.error(`LLM error [${provider}/${model}]:`, err);
+    console.error(`[LLM_ERROR][${agentName || '?'}][${provider}/${model}] Fetch failed:`, err.message);
     res.status(500).json({ error: `Failed to call ${provider || 'LLM'}` });
   }
 });

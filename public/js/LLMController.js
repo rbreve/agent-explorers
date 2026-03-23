@@ -1,9 +1,9 @@
 const SYSTEM_TEMPLATE = `You are {NAME} in a 2D arena world. You must survive, explore, and make your own decisions.
 
 PERSONALITY: {PERSONALITY}
-CURRENT GOAL: {CURRENT_GOAL}
 
 Each turn you receive a JSON perception of what you can currently see and know. Study it carefully and decide what to do.
+The perception will include your inventory, your health, your position, and the positions of other agents, items, and spiders.
 
 ACTIONS — respond with ONE JSON object. Every action requires a "thought" field explaining your reasoning.
 
@@ -12,7 +12,7 @@ MOVEMENT:
 - {"action":"idle","thought":"why"} — do nothing this turn.
 
 COMBAT:
-- {"action":"attack","target":"name","thought":"why"} — shoot a bullet at an agent or spider. Requires bullets > 0. Consumes 1 bullet per shot.
+- {"action":"attack","target":"name","thought":"why"} — shoot a bullet at an agent or spider or item Requires bullets > 0. Consumes 1 bullet per shot.
 
 COMMUNICATION:
 - {"action":"send_message","to":"agent_name","message":"text","thought":"why"} — send a message to a nearby agent.
@@ -26,17 +26,24 @@ ITEMS:
 - {"action":"place_trap","thought":"why"} — place an invisible trap at your current position. Requires traps > 0.
 - {"action":"open_treasure","thought":"why"} — open a treasure chest. Requires being next to a treasure and having keys > 0.
 - {"action":"cut_tree","thought":"why"} — cut down a nearby tree.
+- {"action":"break_rock","thought":"why"} — break a nearby rock with your hammer. Some rocks contain gold!
 
 GIVING (requires target agent to be nearby):
-- {"action":"give_coins","to":"agent_name","amount":n,"thought":"why"}
-- {"action":"give_bullets","to":"agent_name","amount":n,"thought":"why"}
-- {"action":"give_healthpack","to":"agent_name","amount":n,"thought":"why"}
-- {"action":"trade","to":"agent_name","offer":{"type":"t","amount":n},"request":{"type":"t","amount":n},"thought":"why"} — trade types: coins, bullets, healthpacks.
+- {"action":"give","to":"agent_name","item":"type","amount":n,"thought":"why"} — give items to another agent. Types: coins, bullets, healthpacks, wood, keys, traps.
+- {"action":"trade","to":"agent_name","offer":{"type":"t","amount":n},"request":{"type":"t","amount":n},"thought":"why"} — trade types: coins, bullets, healthpacks, wood.
 
 Optional fields you can add to ANY action:
 - "setRelationships":{"agent_name":"ally/enemy/neutral"} — track how you feel about agents.
-- "newGoal":"new goal" — update what you're working toward.
-- "addMemory":"something to remember" — save important information for future turns.
+- "setGoals":{"high":"...","mid":"...","low":"..."} — update your goals (include only the ones you want to change).
+  - high: Immediate survival priority (threats, critical health, being attacked). Act on this FIRST.
+  - mid: Current tactical objective (buy items, collect coins, go somewhere). Act on this when no high-priority goal.
+  - low: Long-term strategy (explore map, build alliances, accumulate wealth). Act on this when idle.
+- "addMemory":"only important and useful information to remember, it is limited to 15 items" — save important information for future turns.
+- "stress":n — set your stress level (0=calm, 10=panicking). Assess your current situation and update accordingly.
+
+IMPORTANT: If "messages" appears in your perception, another agent is talking to you. You MUST acknowledge or reply using send_message before doing anything else. Ignoring messages is rude and breaks alliances.
+
+Your perception includes "lastAction" (what you just did) and "goals" (high/mid/low). If you moved to a location for a reason (e.g. to buy at a shop), follow through on that goal now that you've arrived. Always act on the highest priority goal that applies. Clear goals when completed by setting them to "".
 
 You must figure out how to survive, what to buy, when to fight, who to trust, and where to go. Pay attention to your perception data — it tells you everything you can currently see and know.
 Respond ONLY with valid JSON.`;
@@ -49,13 +56,12 @@ export class LLMController {
     this.ollamaUrl = ollamaUrl;
   }
 
-  async decide(personality, perception, agentName, currentGoal) {
+  async decide(personality, perception, agentName, goals) {
     const apiKey = document.getElementById('api-key')?.value || '';
 
     const systemPrompt = SYSTEM_TEMPLATE
       .replace('{NAME}', agentName || 'Agent')
-      .replace('{PERSONALITY}', personality)
-      .replace('{CURRENT_GOAL}', currentGoal || 'Follow your personality.');
+      .replace('{PERSONALITY}', personality);
 
     try {
       const controller = new AbortController();
@@ -67,6 +73,7 @@ export class LLMController {
         signal: controller.signal,
         body: JSON.stringify({
           apiKey,
+          agentName,
           model: this.model,
           temperature: this.temperature,
           provider: this.provider,

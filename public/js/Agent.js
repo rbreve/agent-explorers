@@ -35,6 +35,7 @@ export class Agent {
     this.hasAxe = false;
     this.hasHammer = false;
     this.wood = 0;
+    this.stress = 0; // 0-10 stress level, set by LLM
     this.inventory = config.inventory ?? [];
     this.agentType = config.agentType || 'warrior';
 
@@ -73,13 +74,17 @@ export class Agent {
     this.pendingDecision = false;
     this.needsReassess = false;
 
+    // Work action (cut_tree, break_rock) — takes time
+    this.workAction = null;      // { action, item, world, elapsed }
+    this.workDuration = 3.5;     // seconds to complete
+
     // Chat & relationships
     this.speechBubble = null;
     this.speechTimer = 0;
     this.speechDuration = 5.0;
     this.thoughtBubble = null;
     this.thoughtTimer = 0;
-    this.thoughtDuration = 3.0;
+    this.thoughtDuration = 5.0;
     this.currentSpeech = '';
     this.incomingMessages = []; // new messages since last decision
     this.conversationHistory = {}; // per-agent: { agentName: [{from, message, tick}] }
@@ -89,7 +94,11 @@ export class Agent {
     for (const f of this.friends) {
       this.relationships[f] = 'ally';
     }
-    this.currentGoal = ''; // LLM can update this dynamically
+    this.goals = {
+      high: '',   // Survival, immediate threats
+      mid: '',    // Current objective (buy items, go to shop, etc.)
+      low: '',    // Long-term plans (explore, build alliances, etc.)
+    };
 
     // Memory
     this.knownShops = []; // [{x, y}] — remembered shop locations
@@ -182,6 +191,9 @@ export class Agent {
     // Stats label (coins + healthpacks) below health bar
     this._createStatsLabel();
 
+    // Tool icons (axe, hammer) — hidden by default
+    this._createToolIcons();
+
     this.group.position.set(this.x, this.y, 0);
   }
 
@@ -205,51 +217,87 @@ export class Agent {
 
   _createStatsLabel() {
     const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 32;
+    canvas.width = 512;
+    canvas.height = 64;
     this.statsCanvas = canvas;
     this.statsCtx = canvas.getContext('2d');
 
     const texture = new THREE.CanvasTexture(canvas);
     const mat = new THREE.SpriteMaterial({ map: texture, transparent: true });
     this.statsLabel = new THREE.Sprite(mat);
-    this.statsLabel.scale.set(70, 8, 1);
-    this.statsLabel.position.set(0, -this.radius - 20, 3);
+    this.statsLabel.scale.set(120, 15, 1);
+    this.statsLabel.position.set(0, -this.radius - 22, 3);
     this.group.add(this.statsLabel);
     this._updateStatsLabel();
   }
 
   _updateStatsLabel() {
-    const text = `${this.coins}c  ${this.healthPacks}hp  ${this.bullets}b  ${this.keys}k`;
+    const text = `${this.coins}c ${this.healthPacks}hp ${this.bullets}b ${this.wood}w ${this.keys}k`;
     if (text === this.lastStatsText) return;
     this.lastStatsText = text;
 
     const ctx = this.statsCtx;
-    ctx.clearRect(0, 0, 256, 32);
-    ctx.font = 'bold 30px Courier New';
+    ctx.clearRect(0, 0, 512, 64);
+    ctx.font = 'bold 42px Courier New';
     ctx.textAlign = 'left';
-    const coinText = `${this.coins}c`;
-    const hpText = `${this.healthPacks}hp`;
-    const bulletText = `${this.bullets}b`;
-    const gap = 8;
+    const gap = 12;
     const parts = [
-      { text: coinText, color: '#ffdd44' },
-      { text: hpText, color: '#44ff88' },
-      { text: bulletText, color: '#ff6644' },
+      { text: `${this.coins}c`, color: '#ffdd44' },
+      { text: `${this.healthPacks}hp`, color: '#44ff88' },
+      { text: `${this.bullets}b`, color: '#ff6644' },
+      { text: `${this.wood}w`, color: '#8B5E3C' },
     ];
     if (this.keys > 0) {
       parts.push({ text: `${this.keys}k`, color: '#ddaa00' });
     }
     const widths = parts.map(p => ctx.measureText(p.text).width);
     const totalWidth = widths.reduce((a, b) => a + b, 0) + gap * (parts.length - 1);
-    let x = (256 - totalWidth) / 2;
+    const startX = (512 - totalWidth) / 2;
+    const padding = 8;
+
+    // Dark background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+    ctx.beginPath();
+    ctx.roundRect(startX - padding, 4, totalWidth + padding * 2, 52, 8);
+    ctx.fill();
+
+    let x = startX;
     for (let i = 0; i < parts.length; i++) {
       ctx.fillStyle = parts[i].color;
-      ctx.fillText(parts[i].text, x, 22);
+      ctx.fillText(parts[i].text, x, 44);
       x += widths[i] + gap;
     }
 
     this.statsLabel.material.map.needsUpdate = true;
+  }
+
+  _createToolIcons() {
+    const axeTex = textureLoader.load('/images/axe.png');
+    axeTex.magFilter = THREE.NearestFilter;
+    axeTex.minFilter = THREE.NearestFilter;
+    const axeMat = new THREE.SpriteMaterial({ map: axeTex, transparent: true });
+    this.axeIcon = new THREE.Sprite(axeMat);
+    this.axeIcon.scale.set(16, 16, 1);
+    this.axeIcon.position.set(this.radius + 8, 0, 2.5);
+    this.axeIcon.visible = false;
+    this.group.add(this.axeIcon);
+
+    const hammerTex = textureLoader.load('/images/hammer.png');
+    hammerTex.magFilter = THREE.NearestFilter;
+    hammerTex.minFilter = THREE.NearestFilter;
+    const hammerMat = new THREE.SpriteMaterial({ map: hammerTex, transparent: true });
+    this.hammerIcon = new THREE.Sprite(hammerMat);
+    this.hammerIcon.scale.set(16, 16, 1);
+    this.hammerIcon.position.set(this.radius + 8, -18, 2.5);
+    this.hammerIcon.visible = false;
+    this.group.add(this.hammerIcon);
+  }
+
+  _updateToolIcons() {
+    this.axeIcon.visible = this.hasAxe;
+    this.hammerIcon.visible = this.hasHammer;
+    // Stack hammer below axe only if axe is visible
+    this.hammerIcon.position.y = this.hasAxe ? -18 : 0;
   }
 
   // System-routed message: agent tells the system "send this to X", system delivers it
@@ -268,6 +316,7 @@ export class Agent {
 
     // System delivers the message to the target agent
     target.incomingMessages.push({ from: this.name, message });
+    target.needsReassess = true;
 
     // Record conversation history on both sides
     if (!target.conversationHistory[this.name]) target.conversationHistory[this.name] = [];
@@ -679,9 +728,9 @@ export class Agent {
 
     const perception = world.getPerception(this);
     try {
-      const decision = await this.llm.decide(this.systemPrompt, perception, this.name, this.currentGoal);
+      const decision = await this.llm.decide(this.systemPrompt, perception, this.name, this.goals);
       if (decision) {
-        console.log(`[${this.name}] action=${decision.action} thought="${decision.thought || ''}" ${decision.message ? 'msg="' + decision.message + '"' : ''}`);
+        console.log(`[LOG_LLM_OUTPUT][${this.name}]`, JSON.stringify(decision));
       }
       this.lastDecision = decision;
       if (decision?.thought && world.showThoughts) {
@@ -759,9 +808,11 @@ export class Agent {
       this.relationships[decision.setRelationshipTo] = decision.setRelationship;
     }
 
-    // Update own goal if the LLM decided to
-    if (decision.newGoal) {
-      this.currentGoal = decision.newGoal;
+    // Update goals if the LLM decided to
+    if (decision.setGoals) {
+      if (decision.setGoals.high != null) this.goals.high = decision.setGoals.high;
+      if (decision.setGoals.mid != null) this.goals.mid = decision.setGoals.mid;
+      if (decision.setGoals.low != null) this.goals.low = decision.setGoals.low;
     }
 
     // Use a health pack from inventory
@@ -789,19 +840,18 @@ export class Agent {
       }
     }
 
-    // Give coins to a nearby agent
+    // Give items to a nearby agent (unified + backward compat)
+    if (decision.action === 'give' && decision.to && decision.item && decision.amount > 0) {
+      this._give(decision.to, decision.item, decision.amount, world);
+    }
     if (decision.action === 'give_coins' && decision.to && decision.amount > 0) {
-      this._giveCoins(decision.to, decision.amount, world);
+      this._give(decision.to, 'coins', decision.amount, world);
     }
-
-    // Give health packs to a nearby agent
-    if (decision.action === 'give_healthpack' && decision.to && decision.amount > 0) {
-      this._giveHealthPacks(decision.to, decision.amount, world);
-    }
-
-    // Give bullets to a nearby agent
     if (decision.action === 'give_bullets' && decision.to && decision.amount > 0) {
-      this._giveBullets(decision.to, decision.amount, world);
+      this._give(decision.to, 'bullets', decision.amount, world);
+    }
+    if (decision.action === 'give_healthpack' && decision.to && decision.amount > 0) {
+      this._give(decision.to, 'healthpacks', decision.amount, world);
     }
 
     // Trade with a nearby agent
@@ -835,34 +885,69 @@ export class Agent {
       }
     }
 
-    // Cut tree — must be near one and have an axe
+    // Cut tree — start work action
     if (decision.action === 'cut_tree') {
       if (!this.hasAxe) {
-        this.incomingMessages.push({ from: 'SYSTEM', message: "You can't cut this tree with your bare hands!." });
+        this.incomingMessages.push({ from: 'SYSTEM', message: "You can't cut this tree with your bare hands!" });
       } else {
-        let cut = false;
+        let found = null;
         for (const item of world.items) {
           if (item.type !== 'tree' || item.isCut) continue;
           const dist = Math.hypot(item.x - this.x, item.y - this.y);
-          if (dist < this.radius + item.radius + 10) {
-            item.cutTree();
-            // Drop 3 wood items around the stump
-            for (let i = 0; i < 3; i++) {
-              const angle = (Math.PI * 2 * i) / 3 + Math.random() * 0.5;
-              const d = 15 + Math.random() * 15;
-              world.addItem(new Item({
-                type: 'wood',
-                x: Math.max(10, Math.min(world.width - 10, item.x + Math.cos(angle) * d)),
-                y: Math.max(10, Math.min(world.height - 10, item.y + Math.sin(angle) * d)),
-              }));
-            }
-            this.incomingMessages.push({ from: 'SYSTEM', message: 'You cut down a tree! Wood dropped nearby.' });
-            cut = true;
-            break;
-          }
+          if (dist < this.radius + item.radius + 10) { found = item; break; }
         }
-        if (!cut) {
+        if (found) {
+          // Cut tree and drop wood immediately
+          found.cutTree();
+          for (let i = 0; i < 3; i++) {
+            const angle = (Math.PI * 2 * i) / 3 + Math.random() * 0.5;
+            const d = 15 + Math.random() * 15;
+            world.addItem(new Item({
+              type: 'wood',
+              x: Math.max(10, Math.min(world.width - 10, found.x + Math.cos(angle) * d)),
+              y: Math.max(10, Math.min(world.height - 10, found.y + Math.sin(angle) * d)),
+            }));
+          }
+          // Agent stays busy for workDuration
+          this.workAction = { action: 'cut_tree', item: found, world, elapsed: 0 };
+          this.targetX = null; this.targetY = null;
+          this.vx = 0; this.vy = 0;
+          new Audio('/sounds/cut_tree.wav').play().catch(() => {});
+          this.incomingMessages.push({ from: 'SYSTEM', message: 'You cut down a tree!' });
+        } else {
           this.incomingMessages.push({ from: 'SYSTEM', message: 'There is no tree nearby to cut.' });
+        }
+      }
+    }
+
+    // Break rock — start work action
+    if (decision.action === 'break_rock') {
+      if (!this.hasHammer) {
+        this.incomingMessages.push({ from: 'SYSTEM', message: "You need a hammer to break rocks!" });
+      } else {
+        let found = null;
+        for (const item of world.items) {
+          if (item.type !== 'rock' || item.isBroken) continue;
+          const dist = Math.hypot(item.x - this.x, item.y - this.y);
+          if (dist < this.radius + item.radius + 10) { found = item; break; }
+        }
+        if (found) {
+          // Break rock and drop loot immediately
+          found.breakRock();
+          if (found.hasGold) {
+            world.addItem(new Item({ type: 'coin', x: found.x, y: found.y }));
+          }
+          found.removeFromScene(world.scene);
+          const idx = world.items.indexOf(found);
+          if (idx !== -1) world.items.splice(idx, 1);
+          // Agent stays busy for workDuration
+          this.workAction = { action: 'break_rock', item: null, world, elapsed: 0 };
+          this.targetX = null; this.targetY = null;
+          this.vx = 0; this.vy = 0;
+          new Audio('/sounds/hammer_rock.wav').play().catch(() => {});
+          this.incomingMessages.push({ from: 'SYSTEM', message: found.hasGold ? 'You broke a rock and found something!' : 'You broke a rock.' });
+        } else {
+          this.incomingMessages.push({ from: 'SYSTEM', message: 'There is no rock nearby to break.' });
         }
       }
     }
@@ -886,6 +971,11 @@ export class Agent {
     if (decision.addMemory) {
       this.memory.push(decision.addMemory);
       if (this.memory.length > 15) this.memory.shift();
+    }
+
+    // Update stress level
+    if (decision.stress != null) {
+      this.stress = Math.max(0, Math.min(10, Math.round(decision.stress)));
     }
 
     // Idle
@@ -920,59 +1010,54 @@ export class Agent {
     }
   }
 
-  _giveCoins(targetName, amount, world) {
+  _give(targetName, itemType, amount, world) {
     const target = world.agents.find(a => a.name === targetName && !a.dead);
     if (!target) return;
     const dist = this.distanceTo(target);
     if (dist > this.awarenessRadius) return;
-    const actual = Math.min(amount, this.coins);
-    if (actual <= 0) return;
-    this.coins -= actual;
-    target.coins += actual;
-    target.incomingMessages.push({ from: this.name, message: `[Gave you ${actual} coin${actual > 1 ? 's' : ''}]` });
+
+    const itemMap = {
+      coins:       { prop: 'coins',       label: 'coin' },
+      bullets:     { prop: 'bullets',      label: 'bullet' },
+      healthpacks: { prop: 'healthPacks',  label: 'health pack' },
+      healthpack:  { prop: 'healthPacks',  label: 'health pack' },
+      wood:        { prop: 'wood',         label: 'wood' },
+      keys:        { prop: 'keys',         label: 'key' },
+      traps:       { prop: 'traps',        label: 'trap' },
+    };
+    const info = itemMap[itemType];
+    if (!info) {
+      this.incomingMessages.push({ from: 'SYSTEM', message: `Can't give "${itemType}" — unknown item type.` });
+      return;
+    }
+    const actual = Math.min(amount, this[info.prop]);
+    if (actual <= 0) {
+      this.incomingMessages.push({ from: 'SYSTEM', message: `You don't have any ${info.label}s to give.` });
+      return;
+    }
+    this[info.prop] -= actual;
+    target[info.prop] += actual;
+    target.incomingMessages.push({ from: this.name, message: `[Gave you ${actual} ${info.label}${actual > 1 ? 's' : ''}]` });
   }
 
-  _giveHealthPacks(targetName, amount, world) {
-    const target = world.agents.find(a => a.name === targetName && !a.dead);
-    if (!target) return;
-    const dist = this.distanceTo(target);
-    if (dist > this.awarenessRadius) return;
-    const actual = Math.min(amount, this.healthPacks);
-    if (actual <= 0) return;
-    this.healthPacks -= actual;
-    target.healthPacks += actual;
-    target.incomingMessages.push({ from: this.name, message: `[Gave you ${actual} health pack${actual > 1 ? 's' : ''}]` });
-  }
-
-  _giveBullets(targetName, amount, world) {
-    const target = world.agents.find(a => a.name === targetName && !a.dead);
-    if (!target) return;
-    const dist = this.distanceTo(target);
-    if (dist > this.awarenessRadius) return;
-    const actual = Math.min(amount, this.bullets);
-    if (actual <= 0) return;
-    this.bullets -= actual;
-    target.bullets += actual;
-    target.incomingMessages.push({ from: this.name, message: `[Gave you ${actual} bullet${actual > 1 ? 's' : ''}]` });
+  _resourceProp(type) {
+    const map = { coins: 'coins', bullets: 'bullets', healthpacks: 'healthPacks', wood: 'wood', keys: 'keys', traps: 'traps' };
+    return map[type] || null;
   }
 
   _getResource(type) {
-    if (type === 'coins') return this.coins;
-    if (type === 'bullets') return this.bullets;
-    if (type === 'healthpacks') return this.healthPacks;
-    return 0;
+    const p = this._resourceProp(type);
+    return p ? this[p] : 0;
   }
 
   _addResource(type, amount) {
-    if (type === 'coins') this.coins += amount;
-    else if (type === 'bullets') this.bullets += amount;
-    else if (type === 'healthpacks') this.healthPacks += amount;
+    const p = this._resourceProp(type);
+    if (p) this[p] += amount;
   }
 
   _removeResource(type, amount) {
-    if (type === 'coins') this.coins -= amount;
-    else if (type === 'bullets') this.bullets -= amount;
-    else if (type === 'healthpacks') this.healthPacks -= amount;
+    const p = this._resourceProp(type);
+    if (p) this[p] -= amount;
   }
 
   _trade(targetName, offer, request, world) {
@@ -1051,6 +1136,10 @@ export class Agent {
     }
   }
 
+  _completeWork(work) {
+    // Work done — agent becomes idle, next perception will show nearby items naturally
+  }
+
   _rebuildAwarenessRing() {
     if (this.awarenessRing) {
       this.group.remove(this.awarenessRing);
@@ -1126,8 +1215,27 @@ export class Agent {
       this.attackCooldownTimer -= dt;
     }
 
-    // LLM decisions — only call when idle (no active target) or urgent
-    if (!this.pendingDecision) {
+    // Work action in progress (cut_tree, break_rock)
+    if (this.workAction) {
+      // Check for danger interrupts
+      const dangerSpider = world.spiders.some(s => !s.dead && Math.hypot(s.x - this.x, s.y - this.y) < this.awarenessRadius * 0.5);
+      const criticalHealth = (this.health / this.maxHealth) <= 0.25;
+      if (dangerSpider || criticalHealth) {
+        this.incomingMessages.push({ from: 'SYSTEM', message: 'Work interrupted — danger!' });
+        this.workAction = null;
+        this.needsReassess = true;
+      } else {
+        this.workAction.elapsed += dt;
+        this.vx = 0; this.vy = 0;
+        if (this.workAction.elapsed >= this.workDuration) {
+          this._completeWork(this.workAction);
+          this.workAction = null;
+        }
+      }
+    }
+
+    // LLM decisions — only call when idle (no active target/work) or urgent
+    if (!this.pendingDecision && !this.workAction) {
       const isIdle = this.targetX == null && this.targetY == null;
       const hasUrgency = this.needsReassess ||
         this.incomingMessages.length > 0 ||
@@ -1225,6 +1333,9 @@ export class Agent {
 
     // Stats label (coins + healthpacks)
     this._updateStatsLabel();
+
+    // Tool icons
+    this._updateToolIcons();
 
     // Speech bubble fade
     if (this.speechBubble && this.speechBubble.visible) {

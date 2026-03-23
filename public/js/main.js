@@ -2,6 +2,7 @@ import { World } from './World.js';
 import { Agent } from './Agent.js';
 import { Item } from './Item.js';
 import { Spider } from './Spider.js';
+import { Shop } from './Shop.js';
 
 const canvas = document.getElementById('game-canvas');
 const world = new World(canvas);
@@ -67,26 +68,7 @@ btnAddAgent.addEventListener('click', () => {
 
 // Add shop
 btnAddShop.addEventListener('click', () => {
-  const shop = new Item({
-    type: 'shop',
-    x: world.width / 2,
-    y: world.height / 2,
-    shopInventory: [
-      { name: 'health_potion',   price: 3,  description: 'Restore 30 health points instantly' },
-      { name: 'wood',            price: 3,  description: 'Wood for 3 coins per wood' },
-      { name: 'bullets',         price: 2,  description: '5 bullets for your gun' },
-      { name: 'max_health_up',   price: 5,  description: '+25 max HP (also heals 25) Will allow to take more damage' },
-      { name: 'firepower_up',    price: 5,  description: '+5 attack damage per bullet' },
-      { name: 'speed_up',        price: 4,  description: '+25 movement speed' },
-      { name: 'reach_up',        price: 6,  description: '+50 Will allow to see further away for coins and items' },
-      { name: 'bullet_speed_up', price: 4,  description: '+60 bullet travel speed' },
-      { name: 'trap',            price: 4,  description: 'A hidden trap — place it to deal 40 damage to anyone who steps on it' },
-      { name: 'axe',             price: 10,  description: 'An axe — needed to cut down trees for wood' },
-      { name: 'hammer',          price: 3,  description: 'A hammer' },
-      { name: 'sell_wood',       price: 3,  description: 'Sell wood for 3 coins per wood' },
-      { name: 'sell_bullets',    price: 1,  description: 'Sell bullets for 1 coin each' },
-    ],
-  });
+  const shop = new Shop({ x: world.width / 2, y: world.height / 2 });
   world.addItem(shop);
   addLog('World', 'Shop opened!', '#886644');
 });
@@ -168,6 +150,30 @@ btnAddAxe.addEventListener('click', () => {
   addLog('World', 'An axe appeared!', '#aa6633');
 });
 
+// Spawn rock cluster helper
+function spawnRockCluster() {
+  const cx = 80 + Math.random() * (world.width - 160);
+  const cy = 80 + Math.random() * (world.height - 160);
+  const spacing = 35;
+  const goldIdx = Math.floor(Math.random() * 9);
+  for (let row = 0; row < 3; row++) {
+    for (let col = 0; col < 2; col++) {
+      world.addItem(new Item({
+        type: 'rock',
+        hasGold: true,
+        x: cx + (col - 1) * spacing,
+        y: cy + (row - 1) * spacing,
+      }));
+    }
+  }
+}
+
+const btnAddRocks = document.getElementById('btn-add-rocks');
+btnAddRocks.addEventListener('click', () => {
+  spawnRockCluster();
+  addLog('World', 'A rock cluster appeared! One might contain gold...', '#888888');
+});
+
 // Spawn note
 const btnAddNote = document.getElementById('btn-add-note');
 btnAddNote.addEventListener('click', () => {
@@ -239,7 +245,11 @@ function updateInfoPanel() {
     `Bullet Spd:${s.bulletSpeed.value} (lv${s.bulletSpeed.level})\n` +
     `Inventory: ${agent.inventory.join(', ') || 'empty'}\n` +
     `Pos: (${Math.round(agent.x)}, ${Math.round(agent.y)})\n` +
-    `Goal: ${agent.currentGoal || agent.systemPrompt.slice(0, 50) + '...'}\n` +
+    `Stress: ${agent.stress}/10\n` +
+    `Goals:\n` +
+    `  HIGH: ${agent.goals.high || '(none)'}\n` +
+    `  MID:  ${agent.goals.mid || '(none)'}\n` +
+    `  LOW:  ${agent.goals.low || '(none)'}\n` +
     `Relationships:\n${rels}\n` +
     `Thought: ${agent.lastDecision?.thought || '...'}\n` +
     `Saying: ${agent.currentSpeech || '(nothing)'}`;
@@ -281,14 +291,11 @@ function checkAgentThoughts() {
             addLog(agent.name, `[BUY] ${bought} from shop`, '#aa8855');
             break;
           }
+          case 'give':
           case 'give_coins':
-            addLog(agent.name, `[GIVE] ${d.amount} coins -> ${d.to}`, '#ffdd44');
-            break;
           case 'give_bullets':
-            addLog(agent.name, `[GIVE] ${d.amount} bullet(s) -> ${d.to}`, '#ff6644');
-            break;
           case 'give_healthpack':
-            addLog(agent.name, `[GIVE] ${d.amount} healthpack(s) -> ${d.to}`, '#44ff88');
+            addLog(agent.name, `[GIVE] ${d.amount} ${d.item || d.action.replace('give_', '')} -> ${d.to}`, '#ffdd44');
             break;
           case 'sell_bullets':
             addLog(agent.name, `[SELL] ${d.amount} bullet(s) for coins`, '#ff6644');
@@ -310,6 +317,9 @@ function checkAgentThoughts() {
             break;
           case 'cut_tree':
             addLog(agent.name, `[TREE] cutting down a tree`, '#2d8a4e');
+            break;
+          case 'break_rock':
+            addLog(agent.name, `[ROCK] breaking a rock`, '#888888');
             break;
           default:
             break;
@@ -350,4 +360,9 @@ for (let i = 0; i < 12; i++) {
     x: 40 + Math.random() * (world.width - 80),
     y: 40 + Math.random() * (world.height - 80),
   }));
+}
+
+// Spawn initial rock clusters
+for (let c = 0; c < 2; c++) {
+  spawnRockCluster();
 }

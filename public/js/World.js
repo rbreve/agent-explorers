@@ -11,7 +11,7 @@ export class World {
     this.spiders = [];
     this.paused = false;
     this.showAwareness = true;
-    this.showThoughts = false;
+    this.showThoughts = true;
     this.showLogs = true;
     this.selectedAgent = null;
 
@@ -184,6 +184,7 @@ export class World {
     for (const item of this.items) {
       if (item.type === 'trap') continue; // traps are invisible to agents
       if (item.type === 'tree' && item.isCut) continue; // cut trees are just stumps
+      if (item.type === 'rock' && item.isBroken) continue; // broken rocks disappear
       const dist = Math.hypot(item.x - agent.x, item.y - agent.y);
       if (dist <= agent.awarenessRadius) {
         const entry = { type: item.type, x: Math.round(item.x), y: Math.round(item.y), dist: Math.round(dist) };
@@ -200,6 +201,10 @@ export class World {
         }
         if (item.type === 'note') {
           entry.hint = 'Pick it up to read the tip!';
+        }
+        if (item.type === 'rock') {
+          entry.breakable = true;
+          entry.needsHammer = !agent.hasHammer;
         }
         nearbyItems.push(entry);
       }
@@ -246,6 +251,7 @@ export class World {
         speed: agent.stats.speed.value,
         reach: agent.stats.reach.value,
         cooldown: agent.attackCooldownTimer > 0,
+        stress: agent.stress,
       },
       agents: nearby,
       items: nearbyItems,
@@ -260,6 +266,12 @@ export class World {
         perception.spiderWarning = `DANGER! Spider very close (${closest.dist} away)! Attack it NOW with {"action":"attack","target":"spider"}`;
       }
     }
+    if (agent.lastDecision) {
+      perception.lastAction = {
+        action: agent.lastDecision.action,
+        thought: agent.lastDecision.thought,
+      };
+    }
     if (agentMsgs.length > 0) perception.messages = agentMsgs;
     if (systemAlerts.length > 0) perception.alerts = systemAlerts;
     if (hw) perception.healthWarning = hw;
@@ -270,7 +282,9 @@ export class World {
     if (agent.knownShops.length > 0) perception.knownShops = agent.knownShops;
     if (agent.knownTreasures.length > 0) perception.knownTreasures = agent.knownTreasures;
     if (agent.memory.length > 0) perception.memory = agent.memory.slice(-5);
-    if (agent.currentGoal) perception.currentGoal = agent.currentGoal;
+    if (agent.goals.high || agent.goals.mid || agent.goals.low) {
+      perception.goals = agent.goals;
+    }
 
     // Exploration — suggest unexplored areas
     const unexplored = [];
@@ -375,7 +389,7 @@ export class World {
       if (agent.dead || agent.agentType === 'shop') continue;
       for (let i = this.items.length - 1; i >= 0; i--) {
         const item = this.items[i];
-        if (item.type === 'shop' || item.type === 'treasure' || item.type === 'tree') continue;
+        if (item.type === 'shop' || item.type === 'treasure' || item.type === 'tree' || item.type === 'rock') continue;
         const dist = Math.hypot(agent.x - item.x, agent.y - item.y);
         if (dist < agent.radius + item.radius) {
           // Trap — damages agent (skip owner)
