@@ -1,0 +1,117 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #0a0a0a;
+  color: #e0e0e0;
+  font-family: 'Courier New', monospace;
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+}
+
+#game-canvas {
+  flex: 1;
+  display: block;
+}
+
+#ui-panel {
+  width: 320px;
+  min-width: 320px;
+  height: 100vh;
+  background: #141414;
+  border-left: 1px solid #333;
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+#ui-panel h2 {
+  color: #ff6644;
+  font-size: 18px;
+  border-bottom: 1px solid #333;
+  padding-bottom: 8px;
+}
+
+#ui-panel h3 {
+  color: #aaa;
+  font-size: 13px;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-bottom: 1px solid #222;
+  padding-bottom: 10px;
+}
+
+input, textarea, select {
+  background: #1e1e1e;
+  border: 1px solid #333;
+  color: #e0e0e0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+button {
+  background: #2a2a2a;
+  border: 1px solid #444;
+  color: #e0e0e0;
+  padding: 8px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  transition: background 0.15s;
+}
+
+button:hover { background: #3a3a3a; }
+
+label {
+  font-size: 11px;
+  color: #888;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#agent-info {
+  font-size: 11px;
+  color: #aaa;
+  min-height: 60px;
+  background: #1a1a1a;
+  padding: 8px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
+
+#agent-logs {
+  font-size: 10px;
+  color: #888;
+  flex: 1;
+  min-height: 100px;
+  overflow-y: auto;
+  background: #1a1a1a;
+  padding: 6px;
+  border-radius: 4px;
+}
+
+#agent-logs .log-entry {
+  padding: 2px 0;
+  border-bottom: 1px solid #1e1e1e;
+}
+
+#agent-logs .log-entry .log-name {
+  font-weight: bold;
+}

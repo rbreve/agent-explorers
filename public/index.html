@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Fighters</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div id="app">
+    <canvas id="game-canvas"></canvas>
+    <div id="ui-panel">
+      <h2>Agent Fighters</h2>
+      <div class="section">
+        <label>OpenRouter API Key</label>
+        <input type="password" id="api-key" placeholder="sk-or-..." />
+      </div>
+      <div class="section">
+        <h3>Ollama Server</h3>
+        <input type="text" id="ollama-url" placeholder="http://localhost:11434" value="http://localhost:11434" />
+      </div>
+      <div class="section">
+        <h3>Add Agent</h3>
+        <input type="text" id="agent-name" placeholder="Agent name" />
+        <select id="agent-provider">
+          <option value="openrouter">OpenRouter</option>
+          <option value="ollama">Ollama</option>
+        </select>
+        <select id="agent-model">
+          <option value="minimax/minimax-m2.5">minimax/minimax-m2.5</option>
+          <option value="openai/gpt-oss-120b">openai/gpt-oss-120b</option>
+          <option value="xiaomi/mimo-v2-flash">xiaomi/mimo-v2-flash</option>
+          <option value="google/gemini-2.5-flash-lite">google/gemini-2.5-flash-lite</option>
+          <option value="google/gemini-3.1-flash-lite-preview">google/gemini-3.1-flash-lite-preview</option>
+          <option value="minimax/minimax-m2.7">minimax/minimax-m2.7</option>
+          <option value="stepfun/step-3.5-flash:free">stepfun/step-3.5-flash:free</option>
+          <option value="deepseek/deepseek-v3.2">deepseek/deepseek-v3.2</option>
+          <option value="nvidia/nemotron-3-super-120b-a12b:free">nvidia/nemotron-3-super-120b-a12b:free</option>
+          <option value="x-ai/grok-4.1-fast">x-ai/grok-4.1-fast</option>
+          <option value="anthropic/claude-haiku-4.5">anthropic/claude-haiku-4.5</option>
+          <option value="openai/gpt-4o-mini">openai/gpt-4o-mini</option>
+        </select>
+        <input type="text" id="agent-ollama-model" placeholder="Ollama model (e.g. llama3)" style="display:none" />
+        <label>Temperature: <input type="number" id="agent-temperature" value="0.9" min="0" max="2" step="0.1" style="width:60px" /></label>
+        <select id="agent-color">
+          <option value="#ff4444">Red</option>
+          <option value="#44aaff">Blue</option>
+          <option value="#44ff44">Green</option>
+          <option value="#ffaa00">Orange</option>
+          <option value="#ff44ff">Pink</option>
+          <option value="#ffffff">White</option>
+        </select>
+        <input type="text" id="agent-friends" placeholder="Friends (comma-separated names)" />
+        <textarea id="agent-prompt" placeholder="Agent personality/goal..." rows="3">You are a hunter exploring the arena. Collect coins, hunt spiders, and survive.</textarea>
+        <button id="btn-add-agent">Add Agent</button>
+      </div>
+      <div class="section">
+        <h3>Add Shop</h3>
+        <button id="btn-add-shop">Add Shop Agent</button>
+      </div>
+      <div class="section">
+        <h3>Spawn Items</h3>
+        <button id="btn-add-coins">Spawn 5 Coins</button>
+        <button id="btn-add-health">Spawn Health Pack</button>
+        <button id="btn-add-spider">Spawn Spider</button>
+        <button id="btn-add-treasure">Spawn Treasure</button>
+        <button id="btn-add-tree">Add Tree</button>
+        <button id="btn-add-axe">Add Axe</button>
+        <input type="text" id="note-text" placeholder="Note tip text..." />
+        <button id="btn-add-note">Spawn Note</button>
+      </div>
+      <div class="section">
+        <h3>World</h3>
+        <label><input type="checkbox" id="toggle-awareness" checked /> Show Awareness</label>
+        <label><input type="checkbox" id="toggle-thoughts" /> Show Thoughts</label>
+        <label><input type="checkbox" id="toggle-logs" checked /> Show Agent Logs</label>
+        <button id="btn-pause">Pause / Resume</button>
+      </div>
+      <div class="section">
+        <h3>Agent Info</h3>
+        <div id="agent-info">Click an agent to see info</div>
+      </div>
+      <div class="section">
+        <h3>Agent Logs</h3>
+        <div id="agent-logs"></div>
+      </div>
+    </div>
+  </div>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/node_modules/three/build/three.module.js"
+    }
+  }
+  </script>
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>
