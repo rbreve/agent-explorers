@@ -2,8 +2,11 @@ import * as THREE from 'three';
 import { Bullet } from './Bullet.js';
 import { Item } from './Item.js';
 import { LLMController } from './LLMController.js';
+import { House, HOUSE_WOOD_COST } from './House.js';
 
 export const BROADCAST_KILL = true;
+export const HEALTHPACK_HEAL = 45;
+export const APPLE_HEAL = 15;
 
 const CHARACTER_SPRITES = [
   '/images/characters/tile_0084.png',
@@ -35,6 +38,8 @@ export class Agent {
     this.hasAxe = false;
     this.hasHammer = false;
     this.wood = 0;
+    this.apples = 0;
+    this.insideHouse = null; // reference to House if agent is inside
     this.stress = 0; // 0-10 stress level, set by LLM
     this.inventory = config.inventory ?? [];
     this.agentType = config.agentType || 'warrior';
@@ -73,6 +78,12 @@ export class Agent {
     this.lastDecision = null;
     this.pendingDecision = false;
     this.needsReassess = false;
+    this.decisionCooldown = 0;       // seconds remaining before next LLM call
+    this.decisionCooldownTime = 2.5; // seconds to wait between decisions
+
+    // Instinct system — LLM-programmed reflexes
+    this.enableInstincts = config.enableInstincts ?? false;
+    this.instincts = []; // { trigger, action, thought }
 
     // Work action (cut_tree, break_rock) — takes time
     this.workAction = null;      // { action, item, world, elapsed }
@@ -587,6 +598,7 @@ export class Agent {
 
   takeDamage(amount, attacker, world) {
     if (this.dead) return;
+    if (this.insideHouse) return; // safe inside house
     this.health -= amount;
     this.lastAttacker = attacker?.name || 'unknown';
     this.needsReassess = true;
@@ -726,11 +738,11 @@ export class Agent {
     if (this.pendingDecision || this.dead) return;
     this.pendingDecision = true;
 
-    const perception = world.getPerception(this);
     try {
+      const perception = world.getPerception(this);
       const decision = await this.llm.decide(this.systemPrompt, perception, this.name, this.goals);
       if (decision) {
-        console.log(`[LOG_LLM_OUTPUT][${this.name}]`, JSON.stringify(decision));
+        console.log(`[LOG_LLM_OUTPUT][${new Date().toLocaleTimeString()}][${this.name}]`, JSON.stringify(decision));
       }
       this.lastDecision = decision;
       if (decision?.thought && world.showThoughts) {
@@ -738,9 +750,10 @@ export class Agent {
       }
       this._executeDecision(decision, world);
     } catch (err) {
-      console.warn(`LLM error for ${this.name}:`, err.message);
+      console.warn(`[DECISION_ERROR][${this.name}]`, err.message, err.stack);
     }
     this.pendingDecision = false;
+    this.decisionCooldown = this.decisionCooldownTime;
   }
 
   _executeDecision(decision, world) {
@@ -758,7 +771,7 @@ export class Agent {
       const targetAgent = world.agents.find(a => a.name === decision.target && !a.dead);
       if (targetAgent) {
         this.attack(targetAgent.x, targetAgent.y, world, targetAgent);
-      } else if (decision.target === 'spider') {
+      } else if (/spider/i.test(decision.target)) {
         // Find nearest spider
         let closest = null;
         let closestDist = Infinity;
@@ -819,7 +832,60 @@ export class Agent {
     if (decision.action === 'use_healthpack') {
       if (this.healthPacks > 0) {
         this.healthPacks--;
-        this.health = Math.min(this.maxHealth, this.health + 25);
+        this.health = Math.min(this.maxHealth, this.health + HEALTHPACK_HEAL);
+      }
+    }
+
+    // Get apple from nearby apple tree
+    if (decision.action === 'get_apple') {
+      let found = null;
+      for (const item of world.items) {
+        if (item.type !== 'apple_tree' || item.apples <= 0) continue;
+        const dist = Math.hypot(item.x - this.x, item.y - this.y);
+        if (dist < this.radius + item.radius + 10) { found = item; break; }
+      }
+      if (found) {
+        found.apples--;
+        this.apples++;
+        this._updateStatsLabel();
+        this.incomingMessages.push({ from: 'SYSTEM', message: `You picked an apple! (${found.apples} left on tree)` });
+      } else {
+        this.incomingMessages.push({ from: 'SYSTEM', message: 'No apple tree nearby with apples.' });
+      }
+    }
+
+    // Eat apple — restore health
+    if (decision.action === 'eat_apple') {
+      if (this.apples > 0) {
+        this.apples--;
+        this.health = Math.min(this.maxHealth, this.health + APPLE_HEAL);
+        this._updateStatsLabel();
+      } else {
+        this.incomingMessages.push({ from: 'SYSTEM', message: "You don't have any apples to eat." });
+      }
+    }
+
+    // Grab a nearby grabbable item
+    if (decision.action === 'grab' || decision.action === 'get' || decision.action === 'take') {
+      const targetType = decision.item;
+      let found = null;
+      for (const item of world.items) {
+        if (!item.grabbable) continue;
+        if (targetType && item.type !== targetType) continue;
+        const dist = Math.hypot(item.x - this.x, item.y - this.y);
+        if (dist < this.radius + item.radius + 10) { found = item; break; }
+      }
+      if (found) {
+        const picked = found.onPickup(this);
+        if (picked !== false) {
+          found.removeFromScene(world.scene);
+          const idx = world.items.indexOf(found);
+          if (idx !== -1) world.items.splice(idx, 1);
+          this._updateStatsLabel();
+          this.incomingMessages.push({ from: 'SYSTEM', message: `You grabbed a ${found.type.replace(/_/g, ' ')}!` });
+        }
+      } else {
+        this.incomingMessages.push({ from: 'SYSTEM', message: `Nothing grabbable nearby${targetType ? ` of type ${targetType}` : ''}.` });
       }
     }
 
@@ -912,7 +978,7 @@ export class Agent {
           this.workAction = { action: 'cut_tree', item: found, world, elapsed: 0 };
           this.targetX = null; this.targetY = null;
           this.vx = 0; this.vy = 0;
-          new Audio('/sounds/cut_tree.wav').play().catch(() => {});
+          new Audio('/sounds/cut_tree.wav').play().catch(e => console.warn('[SOUND] cut_tree blocked:', e.message));
           this.incomingMessages.push({ from: 'SYSTEM', message: 'You cut down a tree!' });
         } else {
           this.incomingMessages.push({ from: 'SYSTEM', message: 'There is no tree nearby to cut.' });
@@ -944,7 +1010,7 @@ export class Agent {
           this.workAction = { action: 'break_rock', item: null, world, elapsed: 0 };
           this.targetX = null; this.targetY = null;
           this.vx = 0; this.vy = 0;
-          new Audio('/sounds/hammer_rock.wav').play().catch(() => {});
+          new Audio('/sounds/hammer_rock.wav').play().catch(e => console.warn('[SOUND] hammer_rock blocked:', e.message));
           this.incomingMessages.push({ from: 'SYSTEM', message: found.hasGold ? 'You broke a rock and found something!' : 'You broke a rock.' });
         } else {
           this.incomingMessages.push({ from: 'SYSTEM', message: 'There is no rock nearby to break.' });
@@ -967,6 +1033,54 @@ export class Agent {
       }
     }
 
+    // Build house — requires HOUSE_WOOD_COST wood
+    if (decision.action === 'build_house') {
+      if (this.wood < HOUSE_WOOD_COST) {
+        this.incomingMessages.push({ from: 'SYSTEM', message: `You need ${HOUSE_WOOD_COST} wood to build a house (you have ${this.wood}).` });
+      } else {
+        this.wood -= HOUSE_WOOD_COST;
+        const house = new House({ x: this.x, y: this.y, owner: this });
+        world.addItem(house);
+        this._updateStatsLabel();
+        this.incomingMessages.push({ from: 'SYSTEM', message: 'You built a house! Enter it to heal and stay safe.' });
+      }
+    }
+
+    // Enter house — must be near own house
+    if (decision.action === 'enter_house') {
+      let found = null;
+      for (const item of world.items) {
+        if (item.type !== 'house' || item.owner !== this) continue;
+        const dist = Math.hypot(item.x - this.x, item.y - this.y);
+        if (dist < this.radius + item.radius + 10) { found = item; break; }
+      }
+      if (found) {
+        if (found.enter(this)) {
+          this.insideHouse = found;
+          this.targetX = null;
+          this.targetY = null;
+          this.vx = 0;
+          this.vy = 0;
+          this.mesh.material.opacity = 0.3;
+          this.incomingMessages.push({ from: 'SYSTEM', message: 'You entered your house. You are healing and safe from damage.' });
+        } else {
+          this.incomingMessages.push({ from: 'SYSTEM', message: 'Cannot enter — house is occupied.' });
+        }
+      } else {
+        this.incomingMessages.push({ from: 'SYSTEM', message: 'No house of yours nearby to enter.' });
+      }
+    }
+
+    // Exit house
+    if (decision.action === 'exit_house') {
+      if (this.insideHouse) {
+        this.insideHouse.exit();
+        this.insideHouse = null;
+        this.mesh.material.opacity = 1;
+        this.incomingMessages.push({ from: 'SYSTEM', message: 'You left your house.' });
+      }
+    }
+
     // Save to memory
     if (decision.addMemory) {
       this.memory.push(decision.addMemory);
@@ -976,6 +1090,12 @@ export class Agent {
     // Update stress level
     if (decision.stress != null) {
       this.stress = Math.max(0, Math.min(10, Math.round(decision.stress)));
+    }
+
+    // Set instincts (LLM-programmed reflexes)
+    if (decision.setInstincts && Array.isArray(decision.setInstincts)) {
+      this.instincts = decision.setInstincts.filter(i => i.trigger && i.action);
+      console.log(`[INSTINCTS][${this.name}] Set ${this.instincts.length} instinct(s):`, this.instincts.map(i => i.trigger).join(', '));
     }
 
     // Idle
@@ -1005,6 +1125,7 @@ export class Agent {
           this.coins -= shopItem.price;
           this._applyUpgrade(shopItem.name);
           this.inventory.push(shopItem.name);
+          this._updateStatsLabel();
         }
       }
     }
@@ -1024,6 +1145,7 @@ export class Agent {
       wood:        { prop: 'wood',         label: 'wood' },
       keys:        { prop: 'keys',         label: 'key' },
       traps:       { prop: 'traps',        label: 'trap' },
+      apples:      { prop: 'apples',       label: 'apple' },
     };
     const info = itemMap[itemType];
     if (!info) {
@@ -1041,7 +1163,7 @@ export class Agent {
   }
 
   _resourceProp(type) {
-    const map = { coins: 'coins', bullets: 'bullets', healthpacks: 'healthPacks', wood: 'wood', keys: 'keys', traps: 'traps' };
+    const map = { coins: 'coins', bullets: 'bullets', healthpacks: 'healthPacks', wood: 'wood', keys: 'keys', traps: 'traps', apples: 'apples' };
     return map[type] || null;
   }
 
@@ -1133,11 +1255,65 @@ export class Agent {
       case 'hammer':
         this.hasHammer = true;
         break;
+      case 'lottery_ticket': {
+        const roll = Math.random();
+        if (roll < 0.1) {
+          this.coins += 10;
+          this.incomingMessages.push({ from: 'SYSTEM', message: 'JACKPOT! You won 10 coins from the lottery!' });
+        } else if (roll < 0.3) {
+          this.coins += 1;
+          this.incomingMessages.push({ from: 'SYSTEM', message: 'You won 1 coin from the lottery!' });
+        } else {
+          this.incomingMessages.push({ from: 'SYSTEM', message: 'Lottery ticket — no luck this time.' });
+        }
+        break;
+      }
     }
   }
 
   _completeWork(work) {
     // Work done — agent becomes idle, next perception will show nearby items naturally
+  }
+
+  _checkInstincts(world) {
+    const healthPct = this.health / this.maxHealth;
+    const isIdle = this.targetX == null && this.targetY == null;
+
+    for (const instinct of this.instincts) {
+      let match = false;
+      const t = instinct.trigger;
+
+      // Health triggers
+      if (t === 'health_below_20') match = healthPct <= 0.2;
+      else if (t === 'health_below_50') match = healthPct <= 0.5;
+      // Combat triggers
+      else if (t === 'spider_close') {
+        match = world.spiders.some(s => !s.dead && Math.hypot(s.x - this.x, s.y - this.y) < this.awarenessRadius * 0.4);
+      }
+      else if (t === 'under_attack') match = this.needsReassess && healthPct < 1;
+      else if (t === 'no_bullets') match = this.bullets <= 0;
+      // Item triggers
+      else if (t === 'coin_nearby') {
+        const coin = world.items.find(i => i.type === 'coin' && Math.hypot(i.x - this.x, i.y - this.y) < this.awarenessRadius);
+        if (coin && isIdle) {
+          match = true;
+          // Auto-fill targetX/Y for move actions
+          if (instinct.action.action === 'move' && instinct.action.targetX == null) {
+            instinct.action = { ...instinct.action, targetX: Math.round(coin.x), targetY: Math.round(coin.y) };
+          }
+        }
+      }
+      else if (t === 'item_nearby') {
+        match = isIdle && world.items.some(i => i.autoPickup && Math.hypot(i.x - this.x, i.y - this.y) < this.awarenessRadius);
+      }
+      // Location triggers
+      else if (t === 'at_shop') {
+        match = world.items.some(i => i.type === 'shop' && Math.hypot(i.x - this.x, i.y - this.y) <= this.radius + i.radius);
+      }
+
+      if (match) return instinct;
+    }
+    return null;
   }
 
   _rebuildAwarenessRing() {
@@ -1175,6 +1351,13 @@ export class Agent {
         this._dropCoins(world);
         return;
       }
+    }
+
+    // House healing — regen HP while inside
+    if (this.insideHouse) {
+      this.health = Math.min(this.maxHealth, this.health + this.insideHouse.healRate * dt);
+      this.vx = 0;
+      this.vy = 0;
     }
 
     // Track exploration — mark current quadrant as visited
@@ -1234,22 +1417,38 @@ export class Agent {
       }
     }
 
+    // Instinct check — fire reflexes before LLM call
+    if (this.enableInstincts && this.instincts.length > 0 && !this.pendingDecision && !this.workAction) {
+      const triggered = this._checkInstincts(world);
+      if (triggered) {
+        console.log(`[INSTINCT_FIRED][${this.name}] ${triggered.trigger} → ${triggered.action.action}`);
+        this.lastDecision = { ...triggered.action, thought: triggered.action.thought || `instinct: ${triggered.trigger}` };
+        if (world.showThoughts) this._showThought(this.lastDecision.thought);
+        this._executeDecision(this.lastDecision, world);
+        this.decisionCooldown = this.decisionCooldownTime;
+        return; // skip LLM call this frame
+      }
+    }
+
     // LLM decisions — only call when idle (no active target/work) or urgent
     if (!this.pendingDecision && !this.workAction) {
+      this.decisionCooldown = Math.max(0, this.decisionCooldown - dt);
       const isIdle = this.targetX == null && this.targetY == null;
       const hasUrgency = this.needsReassess ||
         this.incomingMessages.length > 0 ||
         world.spiders.some(s => !s.dead && Math.hypot(s.x - this.x, s.y - this.y) < this.awarenessRadius * 0.5);
 
-      if (isIdle || hasUrgency) {
+      if (hasUrgency || (isIdle && this.decisionCooldown <= 0)) {
         this.needsReassess = false;
+        this.decisionCooldown = this.decisionCooldownTime;
         this.makeDecision(world);
       }
     }
-    // Safety: if pending for too long (>10s), unstick
+    // Safety: if pending for too long, unstick
     if (this.pendingDecision) {
       this.pendingStuckTimer = (this.pendingStuckTimer || 0) + dt;
-      if (this.pendingStuckTimer > 10) {
+      if (this.pendingStuckTimer > 20) {
+        console.warn(`[STUCK] ${this.name} was pending for 20s, forcing unstick`);
         this.pendingDecision = false;
         this.pendingStuckTimer = 0;
       }
@@ -1270,33 +1469,10 @@ export class Agent {
         this.vy = 0;
         this.targetX = null;
         this.targetY = null;
+        this.decisionCooldown = this.decisionCooldownTime; // pause before next decision
       }
     } else {
-      // No target — wander toward other agents so they meet, or explore randomly
-      this.wanderTimer = (this.wanderTimer || 0) + dt;
-      if (this.wanderTimer > 2.0) {
-        this.wanderTimer = 0;
-        // 60% chance: move toward nearest living agent to encourage encounters
-        const others = world.agents.filter(a => a !== this && !a.dead);
-        if (others.length > 0 && Math.random() < 0.6) {
-          let nearest = others[0], nearDist = this.distanceTo(others[0]);
-          for (let i = 1; i < others.length; i++) {
-            const d = this.distanceTo(others[i]);
-            if (d < nearDist) { nearest = others[i]; nearDist = d; }
-          }
-          // Move toward them but not exactly on top
-          const jitterX = (Math.random() - 0.5) * 80;
-          const jitterY = (Math.random() - 0.5) * 80;
-          this.targetX = Math.max(this.radius + 20, Math.min(world.width - this.radius - 20, nearest.x + jitterX));
-          this.targetY = Math.max(this.radius + 20, Math.min(world.height - this.radius - 20, nearest.y + jitterY));
-        } else {
-          // Random wander toward center-ish area
-          this.targetX = Math.max(this.radius + 20, Math.min(world.width - this.radius - 20,
-            world.width / 2 + (Math.random() - 0.5) * world.width * 0.6));
-          this.targetY = Math.max(this.radius + 20, Math.min(world.height - this.radius - 20,
-            world.height / 2 + (Math.random() - 0.5) * world.height * 0.6));
-        }
-      }
+      // No target — stand still, wait for LLM decision
       this.vx *= 0.9;
       this.vy *= 0.9;
     }

@@ -74,6 +74,16 @@ button {
   font-family: inherit;
   font-size: 12px;
   transition: background 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+button .btn-icon {
+  width: 16px;
+  height: 16px;
+  image-rendering: pixelated;
+  vertical-align: middle;
 }
 
 button:hover { background: #3a3a3a; }
@@ -114,4 +124,16 @@ label {
 
 #agent-logs .log-entry .log-name {
   font-weight: bold;
+}
+
+#shop-editor label {
+  font-size: 11px;
+  color: #ccc;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+#shop-editor .shop-item-price {
+  color: #ffdd44;
+  font-size: 10px;
 }

@@ -13,157 +13,146 @@ function getTexture(path) {
   return ITEM_TEXTURES[path];
 }
 
+// ── Item type definitions ──────────────────────────────────────────
+// Each key is a type name. Properties:
+//   icon        – texture path (or null for canvas-drawn items)
+//   size        – sprite scale [w, h]
+//   radius      – collision/interaction radius
+//   z           – sprite z position
+//   label       – text label rendered above the item
+//   opacity     – sprite opacity (default 1)
+//   autoPickup  – walked-over items are collected automatically
+//   grabbable   – can be picked up with the "grab" action (not auto)
+//   interactive – requires a specific action (shop, treasure, tree…)
+export const ITEM_DEFS = {
+  coin:        { icon: '/images/coin.png',         size: [18,18], z: 1.5, autoPickup: true,  grabbable: false },
+  health_pack: { icon: '/images/health_flask.png',  size: [20,20], z: 1.5, autoPickup: true,  grabbable: false },
+  key:         { icon: '/images/key.png',           size: [20,20], z: 1.5, autoPickup: false,  grabbable: true },
+  wood:        { icon: '/images/wood.png',          size: [20,20], z: 1.5, autoPickup: false,  grabbable: true },
+  axe:         { icon: '/images/axe.png',           size: [22,22], z: 1.5, autoPickup: false,  grabbable: true },
+  hammer:      { icon: '/images/hammer.png',        size: [22,22], z: 1.5, autoPickup: false,  grabbable: true },
+  bullet:      { icon: '/images/bullet.png',        size: [16,16], z: 1.5, autoPickup: true,  grabbable: false },
+  trap:        { icon: '/images/trap.png',          size: [22,22], z: 0.8, autoPickup: false, grabbable: false, opacity: 0.4, radius: 12 },
+  note:        { icon: null, /* canvas-drawn */     size: [24,24], z: 1.5, autoPickup: true,  grabbable: false, radius: 12, label: 'NOTE' },
+  treasure:    { icon: '/images/lock.png',          size: [30,30], z: 1.5, autoPickup: false, grabbable: true,  radius: 15, label: 'TREASURE', interactive: true },
+  tree:        { icon: '/images/world/tree.png',    size: [50,50], z: 1.2, autoPickup: false, grabbable: false, radius: 18, interactive: true },
+  rock:        { icon: '/images/rock.png',          size: [60,60], z: 1.2, autoPickup: false, grabbable: false, radius: 14, interactive: true },
+  apple_tree:  { icon: '/images/appletree.png',     size: [50,50], z: 1.2, autoPickup: false, grabbable: false, radius: 18, interactive: true },
+  shop:        { icon: '/images/store.png',         size: [60,60], z: 1,   autoPickup: false, grabbable: false, radius: 18, interactive: true },
+  house:       { icon: '/images/house.png',         size: [50,50], z: 1,   autoPickup: false, grabbable: false, radius: 18, interactive: true },
+};
+
 export class Item {
   constructor(config) {
     this.type = config.type || 'coin';
     this.x = config.x;
     this.y = config.y;
-    this.radius = config.radius || 8;
+
+    // Look up definition
+    const def = ITEM_DEFS[this.type] || {};
+    this.radius = config.radius || def.radius || 8;
+    this.autoPickup = def.autoPickup ?? true;
+    this.grabbable = config.grabbable ?? def.grabbable ?? false;
+    this.interactive = def.interactive ?? false;
+
+    // Type-specific state
     this.shopInventory = config.shopInventory || null;
+    this.shopName = config.shopName || null;
     this.noteText = config.noteText || null;
-    this.owner = config.owner || null; // who placed this (for traps)
+    this.owner = config.owner || null;
     this.trapDamage = config.trapDamage || 40;
-    this.isCut = false; // for trees
-    this.hasGold = config.hasGold || false; // for rocks
-    this.isBroken = false; // for rocks
+    this.isCut = false;
+    this.hasGold = config.hasGold || false;
+    this.isBroken = false;
+    this.apples = config.apples ?? (this.type === 'apple_tree' ? 3 : 0);
+
     this.group = new THREE.Group();
-    this._build();
+    this._build(def);
   }
 
-  _build() {
-    if (this.type === 'coin') {
-      const tex = getTexture('/images/coin.png');
-      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
-      this.mesh = new THREE.Sprite(mat);
-      this.mesh.scale.set(18, 18, 1);
-      this.mesh.position.z = 1.5;
-      this.group.add(this.mesh);
-    } else if (this.type === 'health_pack') {
-      const tex = getTexture('/images/health_flask.png');
-      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
-      this.mesh = new THREE.Sprite(mat);
-      this.mesh.scale.set(20, 20, 1);
-      this.mesh.position.z = 1.5;
-      this.group.add(this.mesh);
-    } else if (this.type === 'key') {
-      const tex = getTexture('/images/key.png');
-      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
-      this.mesh = new THREE.Sprite(mat);
-      this.mesh.scale.set(20, 20, 1);
-      this.mesh.position.z = 1.5;
-      this.group.add(this.mesh);
-    } else if (this.type === 'treasure') {
-      this.radius = 15;
-      const tex = getTexture('/images/lock.png');
-      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
-      this.mesh = new THREE.Sprite(mat);
-      this.mesh.scale.set(30, 30, 1);
-      this.mesh.position.z = 1.5;
-      this.group.add(this.mesh);
-      this._createLabel('TREASURE');
-    } else if (this.type === 'note') {
-      this.radius = 12;
-      const canvas = document.createElement('canvas');
-      canvas.width = 32;
-      canvas.height = 32;
-      const ctx = canvas.getContext('2d');
-      // Draw a scroll/note icon
-      ctx.fillStyle = '#f5e6c8';
-      ctx.fillRect(6, 4, 20, 24);
-      ctx.strokeStyle = '#8b7355';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(6, 4, 20, 24);
-      // Lines on the note
-      ctx.strokeStyle = '#aaa';
-      ctx.lineWidth = 1;
-      for (let ly = 10; ly <= 24; ly += 4) {
-        ctx.beginPath();
-        ctx.moveTo(9, ly);
-        ctx.lineTo(23, ly);
-        ctx.stroke();
-      }
-      const tex = new THREE.CanvasTexture(canvas);
-      tex.magFilter = THREE.NearestFilter;
-      tex.minFilter = THREE.NearestFilter;
-      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
-      this.mesh = new THREE.Sprite(mat);
-      this.mesh.scale.set(24, 24, 1);
-      this.mesh.position.z = 1.5;
-      this.group.add(this.mesh);
-      this._createLabel('NOTE');
-    } else if (this.type === 'axe') {
-      const tex = getTexture('/images/axe.png');
-      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
-      this.mesh = new THREE.Sprite(mat);
-      this.mesh.scale.set(22, 22, 1);
-      this.mesh.position.z = 1.5;
-      this.group.add(this.mesh);
-    } else if (this.type === 'hammer') {
-      const tex = getTexture('/images/hammer.png');
-      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
-      this.mesh = new THREE.Sprite(mat);
-      this.mesh.scale.set(22, 22, 1);
-      this.mesh.position.z = 1.5;
-      this.group.add(this.mesh);
-    } else if (this.type === 'wood') {
-      const tex = getTexture('/images/wood.png');
-      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
-      this.mesh = new THREE.Sprite(mat);
-      this.mesh.scale.set(20, 20, 1);
-      this.mesh.position.z = 1.5;
-      this.group.add(this.mesh);
-    } else if (this.type === 'tree') {
-      this.radius = 18;
-      const tex = getTexture('/images/world/tree.png');
-      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
-      this.mesh = new THREE.Sprite(mat);
-      this.mesh.scale.set(50, 50, 1);
-      this.mesh.position.z = 1.2;
-      this.group.add(this.mesh);
-    } else if (this.type === 'rock') {
-      this.radius = 14;
-      const tex = getTexture(this.hasGold ? '/images/gold.png' : '/images/rock.png');
-      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
-      this.mesh = new THREE.Sprite(mat);
-      this.mesh.scale.set(60, 60, 1);
-      this.mesh.position.z = 1.2;
-      this.group.add(this.mesh);
-    } else if (this.type === 'trap') {
-      this.radius = 12;
-      const tex = getTexture('/images/trap.png');
-      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.4 });
-      this.mesh = new THREE.Sprite(mat);
-      this.mesh.scale.set(22, 22, 1);
-      this.mesh.position.z = 0.8; // below agents
-      this.group.add(this.mesh);
-    } else if (this.type === 'shop') {
-      this.radius = 30;
-      const tex = getTexture('/images/store.png');
-      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
-      this.mesh = new THREE.Sprite(mat);
-      this.mesh.scale.set(60, 60, 1);
-      this.mesh.position.z = 1;
-      this.group.add(this.mesh);
-      this._createLabel('SHOP');
+  _build(def) {
+    if (this.type === 'note') {
+      // Canvas-drawn note icon
+      this._buildNote();
+    } else if (this.type === 'rock' && this.hasGold) {
+      // Gold rocks use a different texture
+      this._buildSprite('/images/gold.png', def.size, def.z, def.opacity);
+    } else if (def.icon) {
+      this._buildSprite(def.icon, def.size, def.z, def.opacity);
     }
+
+    // Label
+    const labelText = this.type === 'shop' ? (this.shopName || 'SHOP') : def.label;
+    if (labelText) this._createLabel(labelText);
+
     this.group.position.set(this.x, this.y, 0);
+  }
+
+  _buildSprite(icon, size, z, opacity) {
+    const tex = getTexture(icon);
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: opacity ?? 1 });
+    this.mesh = new THREE.Sprite(mat);
+    this.mesh.scale.set(size[0], size[1], 1);
+    this.mesh.position.z = z ?? 1.5;
+    this.group.add(this.mesh);
+  }
+
+  _buildNote() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 32;
+    canvas.height = 32;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#f5e6c8';
+    ctx.fillRect(6, 4, 20, 24);
+    ctx.strokeStyle = '#8b7355';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(6, 4, 20, 24);
+    ctx.strokeStyle = '#aaa';
+    ctx.lineWidth = 1;
+    for (let ly = 10; ly <= 24; ly += 4) {
+      ctx.beginPath();
+      ctx.moveTo(9, ly);
+      ctx.lineTo(23, ly);
+      ctx.stroke();
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+    this.mesh = new THREE.Sprite(mat);
+    this.mesh.scale.set(24, 24, 1);
+    this.mesh.position.z = 1.5;
+    this.group.add(this.mesh);
   }
 
   _createLabel(text) {
     const canvas = document.createElement('canvas');
-    canvas.width = 128;
+    canvas.width = 256;
     canvas.height = 40;
     const ctx = canvas.getContext('2d');
     ctx.font = 'bold 24px Courier New';
     ctx.textAlign = 'center';
     ctx.fillStyle = '#ffffff';
-    ctx.fillText(text, 64, 28);
+    ctx.fillText(text, 128, 28);
     const texture = new THREE.CanvasTexture(canvas);
     const mat = new THREE.SpriteMaterial({ map: texture, transparent: true });
     const label = new THREE.Sprite(mat);
-    label.scale.set(50, 15, 1);
+    label.scale.set(100, 15, 1);
     label.position.set(0, this.radius + 20, 3);
     this.group.add(label);
+    this._label = label;
+    this._labelCanvas = canvas;
+  }
+
+  updateLabel(text) {
+    if (!this._labelCanvas) return;
+    const ctx = this._labelCanvas.getContext('2d');
+    ctx.clearRect(0, 0, 256, 40);
+    ctx.font = 'bold 24px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(text, 128, 28);
+    this._label.material.map.needsUpdate = true;
   }
 
   cutTree() {

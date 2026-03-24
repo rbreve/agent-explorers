@@ -14,6 +14,8 @@ export class World {
     this.showThoughts = true;
     this.showLogs = true;
     this.selectedAgent = null;
+    this.selectedShop = null;
+    this.eventLog = []; // events for UI to consume
 
     // Three.js setup - orthographic 2D camera
     const aspect = window.innerWidth / window.innerHeight;
@@ -40,6 +42,12 @@ export class World {
     this.raycaster = new THREE.Raycaster();
     this.mouse = new THREE.Vector2();
     canvas.addEventListener('click', (e) => this._onClick(e));
+
+    // Drag & drop for shops
+    this._dragging = null;
+    canvas.addEventListener('mousedown', (e) => this._onMouseDown(e));
+    canvas.addEventListener('mousemove', (e) => this._onMouseMove(e));
+    canvas.addEventListener('mouseup', () => this._onMouseUp());
   }
 
   _resize() {
@@ -99,13 +107,69 @@ export class World {
     this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.mouse, this.camera);
+
+    // Check agents first
     const meshes = this.agents.map(a => a.mesh);
     const intersects = this.raycaster.intersectObjects(meshes);
     if (intersects.length > 0) {
       const agent = this.agents.find(a => a.mesh === intersects[0].object);
       this.selectedAgent = agent || null;
-    } else {
+      this.selectedShop = null;
+      return;
+    }
+
+    // Check shops
+    const shopMeshes = this.items.filter(i => i.type === 'shop').map(i => i.mesh);
+    const shopHits = this.raycaster.intersectObjects(shopMeshes);
+    if (shopHits.length > 0) {
+      const shop = this.items.find(i => i.type === 'shop' && i.mesh === shopHits[0].object);
+      this.selectedShop = shop || null;
       this.selectedAgent = null;
+      return;
+    }
+
+    this.selectedAgent = null;
+    this.selectedShop = null;
+  }
+
+  _mouseToWorld(e) {
+    const rect = this.canvas.getBoundingClientRect();
+    this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    const v = new THREE.Vector3(this.mouse.x, this.mouse.y, 0).unproject(this.camera);
+    return { x: v.x, y: v.y };
+  }
+
+  _onMouseDown(e) {
+    const rect = this.canvas.getBoundingClientRect();
+    this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this.mouse, this.camera);
+    const shopMeshes = this.items.filter(i => i.type === 'shop').map(i => i.mesh);
+    const hits = this.raycaster.intersectObjects(shopMeshes);
+    if (hits.length > 0) {
+      const shop = this.items.find(i => i.type === 'shop' && i.mesh === hits[0].object);
+      if (shop) {
+        this._dragging = shop;
+        this.canvas.style.cursor = 'grabbing';
+      }
+    }
+  }
+
+  _onMouseMove(e) {
+    if (!this._dragging) return;
+    const pos = this._mouseToWorld(e);
+    const x = Math.max(30, Math.min(this.width - 30, pos.x));
+    const y = Math.max(30, Math.min(this.height - 30, pos.y));
+    this._dragging.x = x;
+    this._dragging.y = y;
+    this._dragging.group.position.set(x, y, 0);
+  }
+
+  _onMouseUp() {
+    if (this._dragging) {
+      this._dragging = null;
+      this.canvas.style.cursor = '';
     }
   }
 
@@ -190,21 +254,40 @@ export class World {
         const entry = { type: item.type, x: Math.round(item.x), y: Math.round(item.y), dist: Math.round(dist) };
         if (item.type === 'shop' && item.shopInventory) {
           entry.shop = true;
-          entry.inventory = item.shopInventory.map(si => ({
-            name: si.name, price: si.price, desc: si.description,
-            canAfford: agent.coins >= si.price,
-          }));
+          entry.shopName = item.shopName || 'Shop';
+          const atShop = dist <= agent.radius + item.radius;
+          if (atShop) {
+            entry.atShop = true;
+            entry.inventory = item.shopInventory.map(si => ({
+              name: si.name, price: si.price, desc: si.description,
+              canAfford: agent.coins >= si.price,
+            }));
+          }
         }
         if (item.type === 'treasure') {
           entry.needsKey = true;
           entry.youHaveKey = agent.keys > 0;
         }
         if (item.type === 'note') {
-          entry.hint = 'Pick it up to read the tip!';
+          entry.hint = 'There is a note here!';
         }
         if (item.type === 'rock') {
           entry.breakable = true;
           entry.needsHammer = !agent.hasHammer;
+        }
+        if (item.type === 'apple_tree') {
+          entry.apples = item.apples;
+        }
+        if (item.type === 'house') {
+          entry.owner = item.owner?.name || '???';
+          entry.isYours = item.owner === agent;
+          entry.occupied = !!item.occupant;
+        }
+        if (item.grabbable) {
+          entry.grabbable = true;
+        }
+        if (item.autoPickup) {
+          entry.walkOverToCollect = true;
         }
         nearbyItems.push(entry);
       }
@@ -233,73 +316,207 @@ export class World {
 
     const hw = this._getHealthWarning(agent);
 
-    const perception = {
-      you: {
-        name: agent.name,
-        pos: [Math.round(agent.x), Math.round(agent.y)],
-        hp: agent.health,
-        maxHp: agent.stats.maxHealth.value,
-        coins: agent.coins,
-        healthPacks: agent.healthPacks,
-        bullets: agent.bullets,
-        keys: agent.keys,
-        traps: agent.traps,
-        wood: agent.wood,
-        hasAxe: agent.hasAxe,
-        hasHammer: agent.hasHammer,
-        dmg: agent.stats.firepower.value,
-        speed: agent.stats.speed.value,
-        reach: agent.stats.reach.value,
-        cooldown: agent.attackCooldownTimer > 0,
-        stress: agent.stress,
-      },
-      agents: nearby,
-      items: nearbyItems,
-      world: [this.width, this.height],
-    };
+    // Check if agent is at a shop
+    const atShopItem = this.items.find(i => i.type === 'shop' && Math.hypot(i.x - agent.x, i.y - agent.y) <= agent.radius + i.radius);
 
-    // Only include non-empty fields to save tokens
-    if (nearbySpiders.length > 0) {
-      perception.spiders = nearbySpiders;
-      const closest = nearbySpiders.reduce((a, b) => a.dist < b.dist ? a : b);
-      if (closest.dist < 60) {
-        perception.spiderWarning = `DANGER! Spider very close (${closest.dist} away)! Attack it NOW with {"action":"attack","target":"spider"}`;
-      }
-    }
-    if (agent.lastDecision) {
-      perception.lastAction = {
-        action: agent.lastDecision.action,
-        thought: agent.lastDecision.thought,
-      };
-    }
-    if (agentMsgs.length > 0) perception.messages = agentMsgs;
-    if (systemAlerts.length > 0) perception.alerts = systemAlerts;
-    if (hw) perception.healthWarning = hw;
-    if (Object.keys(convos).length > 0) perception.recentConversations = convos;
-    const rels = Object.keys(agent.relationships).length > 0 ? agent.relationships : null;
-    if (rels) perception.relationships = rels;
-    if (agent.friends.length > 0) perception.friends = agent.friends;
-    if (agent.knownShops.length > 0) perception.knownShops = agent.knownShops;
-    if (agent.knownTreasures.length > 0) perception.knownTreasures = agent.knownTreasures;
-    if (agent.memory.length > 0) perception.memory = agent.memory.slice(-5);
-    if (agent.goals.high || agent.goals.mid || agent.goals.low) {
-      perception.goals = agent.goals;
-    }
-
-    // Exploration — suggest unexplored areas
+    // Exploration — unexplored areas
     const unexplored = [];
     for (let qx = 0; qx < 4; qx++) {
       for (let qy = 0; qy < 3; qy++) {
         if (!agent.visitedQuadrants.has(`${qx},${qy}`)) {
-          unexplored.push({ x: qx * 300 + 150, y: qy * 267 + 133 });
+          unexplored.push(`(${qx * 300 + 150},${qy * 267 + 133})`);
         }
       }
     }
-    if (unexplored.length > 0 && unexplored.length < 12) {
-      perception.unexploredAreas = unexplored;
+
+    const rels = Object.keys(agent.relationships).length > 0 ? agent.relationships : null;
+    const healthPct = agent.health / agent.stats.maxHealth.value;
+
+    // ── Build clear text perception ──
+    const lines = [];
+
+    // URGENT section — health warnings, attacks, spider danger
+    const urgentLines = [];
+    if (hw) urgentLines.push(hw);
+    if (nearbySpiders.length > 0) {
+      const closest = nearbySpiders.reduce((a, b) => a.dist < b.dist ? a : b);
+      if (closest.dist < 60) {
+        urgentLines.push(`DANGER! Spider very close (${closest.dist} away)!`);
+      }
+    }
+    if (systemAlerts.length > 0) {
+      for (const alert of systemAlerts) {
+        if (/damage|hit|attack|trap|bit/i.test(alert)) {
+          urgentLines.push(alert);
+        }
+      }
+    }
+    if (urgentLines.length > 0) {
+      lines.push('⚠ IMPORTANT:');
+      for (const u of urgentLines) lines.push(`  ${u}`);
+      lines.push('');
     }
 
-    return perception;
+    // Messages from other agents
+    if (agentMsgs.length > 0) {
+      lines.push('MESSAGES:');
+      for (const m of agentMsgs) lines.push(`  ${m}`);
+      lines.push('');
+    }
+
+    // System alerts (non-urgent)
+    const nonUrgentAlerts = systemAlerts.filter(a => !/damage|hit|attack|trap|bit/i.test(a));
+    if (nonUrgentAlerts.length > 0) {
+      lines.push('ALERTS:');
+      for (const a of nonUrgentAlerts) lines.push(`  ${a}`);
+      lines.push('');
+    }
+
+    // YOU section
+    lines.push('YOU:');
+    lines.push(`  Position: (${Math.round(agent.x)}, ${Math.round(agent.y)})`);
+    if (agent.insideHouse) lines.push('  Current Location: INSIDE YOUR HOUSE (healing, safe from damage)');
+    else if (atShopItem) lines.push(`  Current Location: SHOP "${atShopItem.shopName || 'Shop'}"`);
+    lines.push(`  HP: ${agent.health}/${agent.stats.maxHealth.value} (${Math.round(healthPct * 100)}%)`);
+    lines.push(`  Coins: ${agent.coins} | Bullets: ${agent.bullets} | HP Packs: ${agent.healthPacks}`);
+    const extras = [];
+    if (agent.wood > 0) extras.push(`Wood: ${agent.wood}`);
+    if (agent.apples > 0) extras.push(`Apples: ${agent.apples}`);
+    if (agent.keys > 0) extras.push(`Keys: ${agent.keys}`);
+    if (agent.traps > 0) extras.push(`Traps: ${agent.traps}`);
+    if (extras.length > 0) lines.push(`  ${extras.join(' | ')}`);
+    const tools = [];
+    if (agent.hasAxe) tools.push('Axe');
+    if (agent.hasHammer) tools.push('Hammer');
+    if (tools.length > 0) lines.push(`  Tools: ${tools.join(', ')}`);
+    lines.push(`  Damage: ${agent.stats.firepower.value} | Speed: ${agent.stats.speed.value} | Reach: ${agent.stats.reach.value}`);
+    if (agent.attackCooldownTimer > 0) lines.push('  Weapon: cooling down');
+    lines.push(`  Stress: ${agent.stress}/10`);
+    lines.push('');
+
+    // Goals
+    if (agent.goals.high || agent.goals.mid || agent.goals.low) {
+      lines.push('GOALS:');
+      if (agent.goals.high) lines.push(`  HIGH: ${agent.goals.high}`);
+      if (agent.goals.mid) lines.push(`  MID: ${agent.goals.mid}`);
+      if (agent.goals.low) lines.push(`  LOW: ${agent.goals.low}`);
+      lines.push('');
+    }
+
+    // Last action
+    if (agent.lastDecision) {
+      const d = agent.lastDecision;
+      let lastStr = `${d.action}`;
+      if (d.target) lastStr += ` target=${d.target}`;
+      if (d.to) lastStr += ` to=${d.to}`;
+      if (d.items) lastStr += ` items=${d.items.join(',')}`;
+      if (d.item) lastStr += ` item=${d.item}`;
+      if (d.targetX != null) lastStr += ` at=(${d.targetX},${d.targetY})`;
+      lines.push(`LAST ACTION: ${lastStr}`);
+      if (d.thought) lines.push(`  Thought: "${d.thought}"`);
+      lines.push('');
+    }
+
+    // Nearby agents
+    if (nearby.length > 0) {
+      lines.push('NEARBY AGENTS:');
+      for (const a of nearby) {
+        const rel = agent.relationships[a.name] || 'neutral';
+        lines.push(`  ${a.name} [${rel}] — HP:${a.hp} Coins:${a.coins} at (${a.x},${a.y}) dist:${a.dist}`);
+      }
+      lines.push('');
+    }
+
+    // Nearby items
+    if (nearbyItems.length > 0) {
+      lines.push('NEARBY ITEMS:');
+      for (const it of nearbyItems) {
+        let desc = `${it.type} at (${it.x},${it.y}) dist:${it.dist}`;
+        if (it.shop) {
+          desc = `SHOP "${it.shopName}" at (${it.x},${it.y}) dist:${it.dist}`;
+          if (it.atShop && it.inventory) {
+            lines.push(`  ${desc}`);
+            lines.push('    INVENTORY:');
+            for (const si of it.inventory) {
+              const afford = si.canAfford ? '✓' : '✗';
+              lines.push(`      [${afford}] ${si.name} — ${si.price} coins — ${si.desc}`);
+            }
+            continue;
+          }
+        }
+        if (it.type === 'house') {
+          desc = `HOUSE (${it.owner}'s) at (${it.x},${it.y}) dist:${it.dist}`;
+          if (it.isYours) desc += it.occupied ? ' [you are inside]' : ' [yours — use enter_house]';
+          else desc += it.occupied ? ' [occupied]' : '';
+        }
+        if (it.walkOverToCollect) desc += ' [move here to collect]';
+        if (it.grabbable) desc += ' [use grab to pick up]';
+        if (it.breakable) desc += it.needsHammer ? ' [needs hammer]' : ' [breakable]';
+        if (it.apples != null) desc += ` (${it.apples} apples)`;
+        if (it.needsKey) desc += it.youHaveKey ? ' [you have a key]' : ' [needs key]';
+        if (it.hint) desc += ` — ${it.hint}`;
+        lines.push(`  ${desc}`);
+      }
+      lines.push('');
+    }
+
+    // Spiders
+    if (nearbySpiders.length > 0) {
+      lines.push('SPIDERS:');
+      for (const s of nearbySpiders) {
+        lines.push(`  Spider at (${s.x},${s.y}) dist:${s.dist} HP:${s.hp}`);
+      }
+      lines.push('');
+    }
+
+    // Relationships
+    if (rels) {
+      lines.push('RELATIONSHIPS:');
+      for (const [name, rel] of Object.entries(rels)) {
+        lines.push(`  ${name}: ${rel}`);
+      }
+      lines.push('');
+    }
+
+    // Recent conversations
+    if (Object.keys(convos).length > 0) {
+      lines.push('RECENT CONVERSATIONS:');
+      for (const [name, msgs] of Object.entries(convos)) {
+        lines.push(`  ${name}: ${msgs.slice(-3).join(' | ')}`);
+      }
+      lines.push('');
+    }
+
+    // Memory
+    if (agent.memory.length > 0) {
+      lines.push('MEMORY:');
+      for (const m of agent.memory.slice(-5)) lines.push(`  - ${m}`);
+      lines.push('');
+    }
+
+    // Instincts
+    if (agent.enableInstincts && agent.instincts.length > 0) {
+      lines.push('ACTIVE INSTINCTS:');
+      for (const inst of agent.instincts) {
+        lines.push(`  ${inst.trigger} → ${inst.action.action}`);
+      }
+      lines.push('');
+    } else if (agent.enableInstincts) {
+      lines.push('INSTINCTS: none set (you can program reflexes with setInstincts)');
+      lines.push('');
+    }
+
+    // Known locations
+    if (agent.knownShops.length > 0) {
+      lines.push(`KNOWN SHOPS: ${agent.knownShops.map(s => `(${s.x},${s.y})`).join(', ')}`);
+    }
+    if (unexplored.length > 0 && unexplored.length < 12) {
+      lines.push(`UNEXPLORED AREAS: ${unexplored.join(', ')}`);
+    }
+
+    lines.push(`WORLD SIZE: ${this.width}x${this.height}`);
+
+    return lines.join('\n');
   }
 
   _getHealthWarning(agent) {
@@ -314,17 +531,17 @@ export class World {
     const knowsShop = agent.knownShops.length > 0;
 
     if (pct <= 0.2) {
-      if (agent.healthPacks > 0) return 'CRITICAL! Use use_healthpack NOW!';
-      if (nearbyShop && hasCoins) return 'CRITICAL! Buy health_potion NOW!';
-      if (nearbyHP) return 'CRITICAL! Grab the nearby health pack!';
+      if (agent.healthPacks > 0) return 'CRITICAL HEALTH LOW!';
+      if (nearbyShop && hasCoins) return 'CRITICAL HEALTH LOW';
+      if (nearbyHP) return 'CRITICAL, there is a health pack nearby';
       if (knowsShop && hasCoins) return `CRITICAL! Rush to shop at (${agent.knownShops[0].x},${agent.knownShops[0].y})!`;
       return 'CRITICAL! About to die. Find health!';
     }
     if (pct <= 0.4) {
-      if (agent.healthPacks > 0) return 'WARNING: Health low. Use use_healthpack.';
-      if (nearbyShop && hasCoins) return 'WARNING: Health low. Buy health_potion.';
-      if (nearbyHP) return 'WARNING: Health low. Grab nearby health pack.';
-      if (knowsShop && hasCoins) return `WARNING: Head to shop at (${agent.knownShops[0].x},${agent.knownShops[0].y}).`;
+      if (agent.healthPacks > 0) return 'WARNING: Health low.';
+      if (nearbyShop && hasCoins) return 'WARNING: Health low.';
+      if (nearbyHP) return 'WARNING: Health low..';
+      if (knowsShop && hasCoins) return `WARNING: Shops at (${agent.knownShops[0].x},${agent.knownShops[0].y}).`;
       return 'WARNING: Health low. Find healing.';
     }
     if (pct <= 0.6) {
@@ -359,7 +576,7 @@ export class World {
       // Check hits on agents
       let bulletRemoved = false;
       for (const agent of this.agents) {
-        if (agent === bullet.owner || agent.dead) continue;
+        if (agent === bullet.owner || agent.dead || agent.insideHouse) continue;
         const dist = Math.hypot(agent.x - bullet.x, agent.y - bullet.y);
         if (dist < agent.radius + bullet.radius) {
           agent.takeDamage(bullet.damage, bullet.owner, this);
@@ -376,6 +593,9 @@ export class World {
           const dist = Math.hypot(spider.x - bullet.x, spider.y - bullet.y);
           if (dist < spider.radius + bullet.radius) {
             spider.takeDamage(bullet.damage, this, bullet.owner);
+            if (spider.dead && bullet.owner) {
+              this.eventLog.push({ type: 'spider_kill', killer: bullet.owner.name, color: bullet.owner.color, x: Math.round(spider.x), y: Math.round(spider.y) });
+            }
             bullet.removeFromScene(this.scene);
             this.bullets.splice(i, 1);
             break;
@@ -386,10 +606,10 @@ export class World {
 
     // Check item pickup & trap triggers
     for (const agent of this.agents) {
-      if (agent.dead || agent.agentType === 'shop') continue;
+      if (agent.dead || agent.agentType === 'shop' || agent.insideHouse) continue;
       for (let i = this.items.length - 1; i >= 0; i--) {
         const item = this.items[i];
-        if (item.type === 'shop' || item.type === 'treasure' || item.type === 'tree' || item.type === 'rock') continue;
+        if (!item.autoPickup && item.type !== 'trap') continue;
         const dist = Math.hypot(agent.x - item.x, agent.y - item.y);
         if (dist < agent.radius + item.radius) {
           // Trap — damages agent (skip owner)
@@ -435,7 +655,7 @@ export class World {
       if (spider.dead) continue;
       spider.contactTimer = Math.max(0, spider.contactTimer - dt);
       for (const agent of this.agents) {
-        if (agent.dead || agent.agentType === 'shop') continue;
+        if (agent.dead || agent.agentType === 'shop' || agent.insideHouse) continue;
         const dist = Math.hypot(agent.x - spider.x, agent.y - spider.y);
         if (dist < agent.radius + spider.radius && spider.contactTimer <= 0) {
           agent.takeDamage(spider.damage, null, this);

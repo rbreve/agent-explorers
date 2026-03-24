@@ -7,6 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = 3000;
 const DEBUG_LLM_RESPONSE = process.env.DEBUG_LLM_RESPONSE === 'true';
+const LOG_PERCEPTION = process.env.LOG_PERCEPTION === 'true';
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -22,7 +23,11 @@ app.get('/api/config', (req, res) => {
 
 // LLM proxy endpoint (OpenRouter + Ollama)
 app.post('/api/llm', async (req, res) => {
-  const { model, messages, temperature, provider, ollamaUrl, agentName, apiKey: clientKey } = req.body;
+  const { model, messages, temperature, provider, ollamaUrl, agentName, apiKey: clientKey, logPerception } = req.body;
+
+  if (logPerception && messages?.length > 1) {
+    console.log(`[PERCEPTION][${agentName || '?'}] ${messages[messages.length - 1].content}`);
+  }
 
   try {
     let url, headers, bodyObj;
@@ -57,8 +62,8 @@ app.post('/api/llm', async (req, res) => {
         model: model || 'openai/gpt-4o-mini',
         messages,
         temperature: temperature ?? 0.9,
+        max_tokens: /deepseek|gpt-oss|gpt-5|minimax|o[1-9]|reasoning/.test(model) ? 1000 : 500,
         ...(model?.includes('minimax') ? {} : {
-          max_tokens: /deepseek|gpt-oss|o[1-9]|reasoning/.test(model) ? 1000 : 500,
           response_format: { type: 'json_object' },
         }),
       };
@@ -85,19 +90,19 @@ app.post('/api/llm', async (req, res) => {
         console.error(`[LLM_ERROR][${agentName || '?'}][ollama/${model}] Empty content. Full response: ${JSON.stringify(data)}`);
       }
       if (DEBUG_LLM_RESPONSE) {
-        console.log(`[LOG_LLM_OUTPUT][${agentName || '?'}][ollama/${model}] ${data.message.content || JSON.stringify(data)}`);
+        console.log(`[LOG_LLM_OUTPUT][${new Date().toLocaleTimeString()}][${agentName || '?'}][ollama/${model}] ${data.message.content || JSON.stringify(data)}`);
       }
       return res.json(normalized);
     }
 
     const content = data.choices?.[0]?.message?.content;
     if (data.error) {
-      console.error(`[LLM_ERROR][${agentName || '?'}][${provider}/${model}] ${JSON.stringify(data.error)}`);
+      console.error(`[LLM_ERROR][${new Date().toLocaleTimeString()}][${agentName || '?'}][${provider}/${model}] ${JSON.stringify(data.error)}`);
     } else if (!content) {
-      console.error(`[LLM_ERROR][${agentName || '?'}][${provider}/${model}] Empty content. Full response: ${JSON.stringify(data)}`);
+      console.error(`[LLM_ERROR][${new Date().toLocaleTimeString()}][${agentName || '?'}][${provider}/${model}] Empty content. Full response: ${JSON.stringify(data)}`);
     }
     if (DEBUG_LLM_RESPONSE) {
-      console.log(`[LOG_LLM_OUTPUT][${agentName || '?'}][${provider}/${model}] ${content || JSON.stringify(data)}`);
+      console.log(`[LOG_LLM_OUTPUT][${new Date().toLocaleTimeString()}][${agentName || '?'}][${provider}/${model}] ${content || JSON.stringify(data)}`);
     }
     res.json(data);
   } catch (err) {

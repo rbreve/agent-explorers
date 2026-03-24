@@ -2,7 +2,7 @@ import { World } from './World.js';
 import { Agent } from './Agent.js';
 import { Item } from './Item.js';
 import { Spider } from './Spider.js';
-import { Shop } from './Shop.js';
+import { Shop, DEFAULT_INVENTORY } from './Shop.js';
 
 const canvas = document.getElementById('game-canvas');
 const world = new World(canvas);
@@ -50,6 +50,8 @@ btnAddAgent.addEventListener('click', () => {
     ? (document.getElementById('ollama-url').value || 'http://localhost:11434')
     : null;
 
+  const enableInstincts = document.getElementById('agent-instincts').checked;
+
   const agent = new Agent({
     name,
     model,
@@ -58,6 +60,7 @@ btnAddAgent.addEventListener('click', () => {
     color,
     temperature,
     friends,
+    enableInstincts,
     systemPrompt: prompt,
     x: 100 + Math.random() * (world.width - 200),
     y: 100 + Math.random() * (world.height - 200),
@@ -174,6 +177,18 @@ btnAddRocks.addEventListener('click', () => {
   addLog('World', 'A rock cluster appeared! One might contain gold...', '#888888');
 });
 
+// Spawn apple tree
+const btnAddAppleTree = document.getElementById('btn-add-appletree');
+btnAddAppleTree.addEventListener('click', () => {
+  const appleTree = new Item({
+    type: 'apple_tree',
+    x: 50 + Math.random() * (world.width - 100),
+    y: 50 + Math.random() * (world.height - 100),
+  });
+  world.addItem(appleTree);
+  addLog('World', 'An apple tree appeared!', '#ff4444');
+});
+
 // Spawn note
 const btnAddNote = document.getElementById('btn-add-note');
 btnAddNote.addEventListener('click', () => {
@@ -222,11 +237,17 @@ toggleLogs.addEventListener('change', (e) => {
 });
 
 // Agent info panel update
+let lastSelectedAgent = null;
 function updateInfoPanel() {
   const agent = world.selectedAgent;
   if (!agent) {
     agentInfoDiv.textContent = 'Click an agent to see info';
+    lastSelectedAgent = null;
     return;
+  }
+  if (lastSelectedAgent !== agent) {
+    lastSelectedAgent = agent;
+    agentInfoDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
   const s = agent.stats;
   const rels = Object.entries(agent.relationships)
@@ -235,10 +256,10 @@ function updateInfoPanel() {
   agentInfoDiv.textContent =
     `Name: ${agent.name}  [${agent.dead ? 'DEAD' : 'alive'}]\n` +
     `Model: ${agent.model}\n` +
-    `Coins: ${agent.coins}  HP Packs: ${agent.healthPacks}  Bullets: ${agent.bullets}  Keys: ${agent.keys}  Traps: ${agent.traps}  Wood: ${agent.wood}\n` +
+    `Coins: ${agent.coins}  Health Potions: ${agent.healthPacks}  Bullets: ${agent.bullets}  Keys: ${agent.keys}  Traps: ${agent.traps}  Wood: ${agent.wood}  Apples: ${agent.apples}\n` +
     `Tools: ${[agent.hasAxe ? 'Axe' : '', agent.hasHammer ? 'Hammer' : ''].filter(Boolean).join(', ') || 'none'}\n` +
     `--- Stats ---\n` +
-    `HP:        ${agent.health}/${s.maxHealth.value} (lv${s.maxHealth.level})\n` +
+    `HEALTH (important):        ${agent.health}/${s.maxHealth.value} (lv${s.maxHealth.level})\n` +
     `Firepower: ${s.firepower.value} (lv${s.firepower.level})\n` +
     `Speed:     ${s.speed.value} (lv${s.speed.level})\n` +
     `Reach:     ${s.reach.value} (lv${s.reach.level})\n` +
@@ -251,8 +272,66 @@ function updateInfoPanel() {
     `  MID:  ${agent.goals.mid || '(none)'}\n` +
     `  LOW:  ${agent.goals.low || '(none)'}\n` +
     `Relationships:\n${rels}\n` +
+    `House: ${agent.insideHouse ? 'INSIDE (healing)' : 'not inside'}\n` +
+    `Instincts: ${agent.enableInstincts ? (agent.instincts.length > 0 ? agent.instincts.map(i => i.trigger).join(', ') : 'none set') : 'disabled'}\n` +
     `Thought: ${agent.lastDecision?.thought || '...'}\n` +
     `Saying: ${agent.currentSpeech || '(nothing)'}`;
+}
+
+// Shop editor
+const shopEditorSection = document.getElementById('shop-editor-section');
+const shopEditorDiv = document.getElementById('shop-editor');
+let lastEditedShop = null;
+
+function updateShopEditor() {
+  const shop = world.selectedShop;
+  if (!shop) {
+    shopEditorSection.style.display = 'none';
+    lastEditedShop = null;
+    return;
+  }
+  shopEditorSection.style.display = '';
+  if (lastEditedShop === shop) return; // already showing this shop
+  lastEditedShop = shop;
+  shopEditorSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  shopEditorDiv.innerHTML = '';
+
+  // Shop name input
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.value = shop.shopName || 'General Store';
+  nameInput.placeholder = 'Shop name...';
+  nameInput.style.marginBottom = '6px';
+  nameInput.addEventListener('input', () => {
+    shop.shopName = nameInput.value;
+    shop.updateLabel(nameInput.value);
+  });
+  shopEditorDiv.appendChild(nameInput);
+
+  for (const item of DEFAULT_INVENTORY) {
+    const enabled = shop.shopInventory.some(si => si.name === item.name);
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = enabled;
+    cb.addEventListener('change', () => {
+      if (cb.checked) {
+        if (!shop.shopInventory.some(si => si.name === item.name)) {
+          shop.shopInventory.push({ ...item });
+        }
+      } else {
+        shop.shopInventory = shop.shopInventory.filter(si => si.name !== item.name);
+      }
+    });
+    label.appendChild(cb);
+    label.append(` ${item.name.replace(/_/g, ' ')} `);
+    const priceSpan = document.createElement('span');
+    priceSpan.className = 'shop-item-price';
+    priceSpan.textContent = `(${item.price} coins)`;
+    label.appendChild(priceSpan);
+    shopEditorDiv.appendChild(label);
+  }
 }
 
 // Logging
@@ -274,7 +353,7 @@ function checkAgentThoughts() {
   for (const agent of world.agents) {
     if (agent.lastDecision?.thought) {
       const d = agent.lastDecision;
-      const key = `${d.action}|${d.target || d.to || ''}|${d.thought}`;
+      const key = `${d.action}|${d.target || d.to || ''}|${d.message || ''}|${d.items || d.item || ''}`;
       const prev = lastDecisionKeys.get(agent.name);
       if (prev !== key) {
         lastDecisionKeys.set(agent.name, key);
@@ -321,6 +400,26 @@ function checkAgentThoughts() {
           case 'break_rock':
             addLog(agent.name, `[ROCK] breaking a rock`, '#888888');
             break;
+          case 'get_apple':
+            addLog(agent.name, `[APPLE] picked an apple`, '#ff4444');
+            break;
+          case 'eat_apple':
+            addLog(agent.name, `[APPLE] ate an apple`, '#44ff88');
+            break;
+          case 'grab':
+          case 'get':
+          case 'take':
+            addLog(agent.name, `[GRAB] picked up ${d.item || 'an item'}`, '#ddaa00');
+            break;
+          case 'build_house':
+            addLog(agent.name, `[HOUSE] built a house!`, '#8B5E3C');
+            break;
+          case 'enter_house':
+            addLog(agent.name, `[HOUSE] entered their house`, '#8B5E3C');
+            break;
+          case 'exit_house':
+            addLog(agent.name, `[HOUSE] left their house`, '#8B5E3C');
+            break;
           default:
             break;
         }
@@ -337,7 +436,16 @@ function gameLoop(time) {
 
   world.update(dt);
   updateInfoPanel();
+  updateShopEditor();
   checkAgentThoughts();
+
+  // Flush world events to log
+  for (const evt of world.eventLog) {
+    if (evt.type === 'spider_kill') {
+      addLog(evt.killer, `killed a spider at (${evt.x}, ${evt.y})!`, evt.color);
+    }
+  }
+  world.eventLog.length = 0;
 
   requestAnimationFrame(gameLoop);
 }

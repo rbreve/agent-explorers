@@ -2,8 +2,11 @@ const SYSTEM_TEMPLATE = `You are {NAME} in a 2D arena world. You must survive, e
 
 PERSONALITY: {PERSONALITY}
 
-Each turn you receive a JSON perception of what you can currently see and know. Study it carefully and decide what to do.
-The perception will include your inventory, your health, your position, and the positions of other agents, items, and spiders.
+You are just a human being in a world, you must survive, explore, and make your own decisions. Interact with others, talk to them, 
+buy items, sell items, and make your own decisions, trade, discover.
+
+Each turn you receive a perception of what you can currently see and know. Read it carefully and decide what to do.
+Pay attention to sections marked IMPORTANT — they require immediate action.
 
 ACTIONS — respond with ONE JSON object. Every action requires a "thought" field explaining your reasoning.
 
@@ -27,6 +30,10 @@ ITEMS:
 - {"action":"open_treasure","thought":"why"} — open a treasure chest. Requires being next to a treasure and having keys > 0.
 - {"action":"cut_tree","thought":"why"} — cut down a nearby tree.
 - {"action":"break_rock","thought":"why"} — break a nearby rock with your hammer. Some rocks contain gold!
+- {"action":"grab","item":"type","thought":"why"} — pick up a nearby grabbable item. Check "grabbable:true" in your perception.
+- {"action":"build_house","thought":"why"} — build a house at your current position. Requires 5 wood. Your house heals you and protects from damage.
+- {"action":"enter_house","thought":"why"} — enter your own house to heal and be safe. Must be near your house.
+- {"action":"exit_house","thought":"why"} — leave your house.
 
 GIVING (requires target agent to be nearby):
 - {"action":"give","to":"agent_name","item":"type","amount":n,"thought":"why"} — give items to another agent. Types: coins, bullets, healthpacks, wood, keys, traps.
@@ -40,12 +47,13 @@ Optional fields you can add to ANY action:
   - low: Long-term strategy (explore map, build alliances, accumulate wealth). Act on this when idle.
 - "addMemory":"only important and useful information to remember, it is limited to 15 items" — save important information for future turns.
 - "stress":n — set your stress level (0=calm, 10=panicking). Assess your current situation and update accordingly.
+- "setInstincts":[{"trigger":"trigger_name","action":{...}}] — program instant reflexes that fire without thinking. Available triggers: health_below_20, health_below_50, spider_close, under_attack, no_bullets, coin_nearby, item_nearby, at_shop. The action is any valid action object. These fire instantly when the condition is met — like muscle memory. Set to [] to clear all instincts.
 
-IMPORTANT: If "messages" appears in your perception, another agent is talking to you. You MUST acknowledge or reply using send_message before doing anything else. Ignoring messages is rude and breaks alliances.
+IMPORTANT: If MESSAGES appears in your perception, another agent is talking to you. You MUST acknowledge or reply using send_message before doing anything else. Ignoring messages is rude and breaks alliances.
 
-Your perception includes "lastAction" (what you just did) and "goals" (high/mid/low). If you moved to a location for a reason (e.g. to buy at a shop), follow through on that goal now that you've arrived. Always act on the highest priority goal that applies. Clear goals when completed by setting them to "".
+Your perception includes LAST ACTION (what you just did) and GOALS (high/mid/low). Use your goals to remember what you were doing and why. Always act on the highest priority goal that applies. Clear goals when completed by setting them to "".
 
-You must figure out how to survive, what to buy, when to fight, who to trust, and where to go. Pay attention to your perception data — it tells you everything you can currently see and know.
+You must figure out how to survive, what to buy, when to fight, who to trust, and where to go. Your perception tells you everything you can currently see and know.
 Respond ONLY with valid JSON.`;
 
 export class LLMController {
@@ -65,7 +73,7 @@ export class LLMController {
 
     try {
       const controller = new AbortController();
-      const timeoutMs = this.provider === 'ollama' ? 30000 : 8000;
+      const timeoutMs = this.provider === 'ollama' ? 30000 : 15000;
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
       const res = await fetch('/api/llm', {
         method: 'POST',
@@ -78,9 +86,10 @@ export class LLMController {
           temperature: this.temperature,
           provider: this.provider,
           ollamaUrl: this.ollamaUrl,
+          logPerception: document.getElementById('toggle-perception-log')?.checked || false,
           messages: [
             { role: 'system', content: systemPrompt },
-            { role: 'user', content: JSON.stringify(perception) },
+            { role: 'user', content: perception },
           ],
         }),
       });
@@ -88,14 +97,14 @@ export class LLMController {
       clearTimeout(timeout);
       const data = await res.json();
       if (data.error) {
-        console.warn(`LLM API error [${this.provider}/${this.model}]:`, JSON.stringify(data.error));
-        return { action: 'idle', thought: `LLM error: ${data.error.message || JSON.stringify(data.error)}` };
+        console.error(`[LLM_ERROR][${this.provider}/${this.model}]`, JSON.stringify(data.error));
+        return { action: 'idle', thought: "I'm stuck, my brain is not working..." };
       }
 
       let content = data.choices?.[0]?.message?.content;
       if (!content) {
-        console.warn(`LLM empty content [${this.provider}/${this.model}]:`, JSON.stringify(data));
-        return { action: 'idle', thought: 'LLM returned empty response' };
+        console.error(`[LLM_ERROR][${this.provider}/${this.model}] Empty content:`, JSON.stringify(data));
+        return { action: 'idle', thought: "I'm stuck, my brain is not working..." };
       }
 
       // Strip markdown code fences (```json ... ```)
@@ -108,121 +117,17 @@ export class LLMController {
         if (match) {
           try { return JSON.parse(match[0]); } catch {}
         }
-        // Try to find any JSON object
         const braceMatch = content.match(/\{[^{}]*\}/);
         if (braceMatch) {
           try { return JSON.parse(braceMatch[0]); } catch {}
         }
-        console.warn(`LLM unparseable [${this.provider}/${this.model}]:`, content.slice(0, 300));
-        return { action: 'idle', thought: `LLM parse error: ${content.slice(0, 80)}` };
+        console.error(`[LLM_ERROR][${this.provider}/${this.model}] Unparseable:`, content.slice(0, 300));
+        return { action: 'idle', thought: "I'm stuck, my brain is not working..." };
       }
     } catch (err) {
-      console.warn(`LLM fetch error [${this.provider}/${this.model}]:`, err.message);
-      return { action: 'idle', thought: `LLM fetch error: ${err.message}` };
+      console.error(`[LLM_ERROR][${this.provider}/${this.model}] Fetch failed:`, err.message);
+      return { action: 'idle', thought: "I'm stuck, my brain is not working..." };
     }
   }
 
-  _fallbackAI(perception) {
-    const self = perception.you;
-    const agents = perception.agents || [];
-    const items = perception.items || [];
-    const messages = perception.messages || [];
-    const knownShops = perception.knownShops || [];
-    const friends = perception.friends || [];
-
-    const maxHp = self.maxHp || 100;
-    const healthPct = self.hp / maxHp;
-    const nearbyShop = items.find(i => i.shop);
-    const healthPack = items.find(i => i.type === 'health_pack');
-
-    // CRITICAL health
-    if (healthPct <= 0.2) {
-      if (self.healthPacks > 0) return { action: 'use_healthpack', thought: 'CRITICAL: using health pack' };
-      if (nearbyShop && self.coins >= 3) return { action: 'buy', item: 'health_potion', thought: 'CRITICAL: buying potion' };
-      if (healthPack) return { action: 'move', targetX: healthPack.x, targetY: healthPack.y, thought: 'CRITICAL: grabbing health pack' };
-      if (knownShops.length > 0 && self.coins >= 3) return { action: 'move', targetX: knownShops[0].x, targetY: knownShops[0].y, thought: 'CRITICAL: rushing to shop' };
-    }
-
-    // Low health
-    if (healthPct <= 0.4) {
-      if (self.healthPacks > 0) return { action: 'use_healthpack', thought: 'Low health, using pack' };
-      if (nearbyShop && self.coins >= 3) return { action: 'buy', item: 'health_potion', thought: 'Low health, buying potion' };
-      if (healthPack) return { action: 'move', targetX: healthPack.x, targetY: healthPack.y, thought: 'Low health, getting pack' };
-      if (knownShops.length > 0 && self.coins >= 3) return { action: 'move', targetX: knownShops[0].x, targetY: knownShops[0].y, thought: 'Heading to shop to heal' };
-    }
-
-    // Attack nearby spiders (urgent — they bite!)
-    const spiders = perception.spiders || [];
-    if (spiders.length > 0 && self.bullets > 0 && !self.cooldown) {
-      return { action: 'attack', target: 'spider', thought: 'Spider nearby — shooting it' };
-    }
-
-    // Introduce yourself to a stranger (first meeting only)
-    const convos = perception.recentConversations || {};
-    const stranger = agents.find(a => a.type !== 'shop' && !convos[a.name]);
-    if (stranger) {
-      return { action: 'send_message', to: stranger.name, message: `Hey, I'm ${self.name}.`, thought: `Introducing myself to ${stranger.name}` };
-    }
-
-    // Sell excess bullets for coins
-    if (self.bullets > 10) {
-      const sellAmt = self.bullets - 5;
-      return { action: 'sell_bullets', amount: sellAmt, thought: 'Selling excess bullets for coins' };
-    }
-
-    // Moderate health — head to shop
-    if (healthPct <= 0.6) {
-      if (healthPack) return { action: 'move', targetX: healthPack.x, targetY: healthPack.y, thought: 'Getting health pack' };
-      if (knownShops.length > 0 && self.coins >= 3) return { action: 'move', targetX: knownShops[0].x, targetY: knownShops[0].y, thought: 'Health dropping, going to shop' };
-    }
-
-    // Buy bullets if out
-    if (nearbyShop && self.bullets <= 0 && self.coins >= 2) {
-      return { action: 'buy', items: ['bullets'], thought: 'Need ammo' };
-    }
-
-    // Buy upgrades
-    if (nearbyShop && self.coins >= 7 && healthPct > 0.5) {
-      const picks = ['firepower_up', 'speed_up', 'reach_up'];
-      return { action: 'buy', items: [picks[Math.floor(Math.random() * picks.length)]], thought: 'Buying upgrade' };
-    }
-
-    // Collect coins
-    const coin = items.find(i => i.type === 'coin');
-    if (coin) return { action: 'move', targetX: coin.x, targetY: coin.y, thought: 'Collecting coin' };
-
-    // Nearby agent — pick a random action: attack, move away, or keep exploring
-    const nearby = agents.find(a => a.type !== 'shop');
-    if (nearby) {
-      const isFriend = friends.includes(nearby.name);
-      const roll = Math.random();
-      if (!isFriend && !self.cooldown && self.bullets > 0 && healthPct > 0.4 && roll < 0.4) {
-        return { action: 'attack', target: nearby.name, thought: `Attacking ${nearby.name}` };
-      }
-      if (roll < 0.6) {
-        // Move away
-        const dx = self.pos[0] - nearby.x;
-        const dy = self.pos[1] - nearby.y;
-        const len = Math.hypot(dx, dy) || 1;
-        return {
-          action: 'move',
-          targetX: Math.max(50, Math.min(1150, self.pos[0] + (dx / len) * 150)),
-          targetY: Math.max(50, Math.min(750, self.pos[1] + (dy / len) * 150)),
-          thought: `Moving away from ${nearby.name}`,
-        };
-      }
-    }
-
-    // Wander
-    if (healthPct < 0.7 && knownShops.length > 0) {
-      return { action: 'move', targetX: knownShops[0].x, targetY: knownShops[0].y, thought: 'Heading to shop' };
-    }
-
-    return {
-      action: 'move',
-      targetX: Math.max(50, Math.min(1150, self.pos[0] + (Math.random() - 0.5) * 300)),
-      targetY: Math.max(50, Math.min(750, self.pos[1] + (Math.random() - 0.5) * 300)),
-      thought: 'Exploring',
-    };
-  }
 }

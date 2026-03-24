@@ -9,7 +9,7 @@ export class Spider {
     this.health = config.health ?? 20;
     this.damage = config.damage ?? 2;
     this.speed = config.speed ?? 20;
-    this.contactCooldown = 1.0; // seconds between contact damage
+    this.contactCooldown = 5.0; // seconds between contact damage
     this.contactTimer = 0;
     this.dead = false;
 
