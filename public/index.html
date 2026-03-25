@@ -60,6 +60,42 @@
           <textarea id="agent-prompt" placeholder="Agent personality/goal..." rows="4">You are a hunter exploring the arena. Collect coins, hunt spiders, and survive.</textarea>
         </div>
         <label class="checkbox-row"><input type="checkbox" id="agent-instincts" /> Enable instincts</label>
+        <details class="agent-options-accordion">
+          <summary>Starting Loadout</summary>
+          <div class="accordion-body">
+            <div class="field-grid">
+              <div class="field-group">
+                <label for="agent-start-x">Grid X</label>
+                <input type="number" id="agent-start-x" placeholder="auto" min="0" max="29" />
+              </div>
+              <div class="field-group">
+                <label for="agent-start-y">Grid Y</label>
+                <input type="number" id="agent-start-y" placeholder="auto" min="0" max="19" />
+              </div>
+            </div>
+            <div class="field-grid">
+              <div class="field-group">
+                <label for="agent-start-coins">Coins</label>
+                <input type="number" id="agent-start-coins" placeholder="0" min="0" />
+              </div>
+              <div class="field-group">
+                <label for="agent-start-bullets">Bullets</label>
+                <input type="number" id="agent-start-bullets" placeholder="0" min="0" />
+              </div>
+            </div>
+            <div class="field-grid">
+              <div class="field-group">
+                <label for="agent-start-health">Health</label>
+                <input type="number" id="agent-start-health" placeholder="100" min="1" max="200" />
+              </div>
+              <div class="field-group">
+                <label for="agent-start-axe">
+                  <input type="checkbox" id="agent-start-axe" /> Has Axe
+                </label>
+              </div>
+            </div>
+          </div>
+        </details>
         <button id="btn-add-agent" class="button-primary"><img class="btn-icon" src="/images/characters/tile_0084.png" alt="">Deploy Agent</button>
       </div>
 

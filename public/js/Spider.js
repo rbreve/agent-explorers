@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { Item } from './Item.js';
+import { Grid } from './Grid.js';
 
 export class Spider {
   constructor(config) {
@@ -74,11 +75,8 @@ export class Spider {
     for (let i = 0; i < 3; i++) {
       const angle = (Math.PI * 2 * i) / 3 + Math.random() * 0.5;
       const dist = 15 + Math.random() * 20;
-      world.addItem(new Item({
-        type: 'coin',
-        x: this.x + Math.cos(angle) * dist,
-        y: this.y + Math.sin(angle) * dist,
-      }));
+      const pos = Grid.snap(this.x + Math.cos(angle) * dist, this.y + Math.sin(angle) * dist);
+      world.addItem(new Item({ type: 'coin', x: pos.x, y: pos.y }));
     }
     for (let i = 0; i < 3; i++) {
       const angle = (Math.PI * 2 * i) / 3 + Math.random() * 0.5 + Math.PI;

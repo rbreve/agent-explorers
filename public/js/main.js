@@ -3,6 +3,7 @@ import { Agent } from './Agent.js';
 import { Item } from './Item.js';
 import { Spider } from './Spider.js';
 import { Shop, DEFAULT_INVENTORY } from './Shop.js';
+import { Grid } from './Grid.js';
 
 const canvas = document.getElementById('game-canvas');
 const world = new World(canvas);
@@ -61,6 +62,25 @@ btnAddAgent.addEventListener('click', () => {
 
   const enableInstincts = document.getElementById('agent-instincts').checked;
 
+  // Optional starting loadout
+  const startX = document.getElementById('agent-start-x').value;
+  const startY = document.getElementById('agent-start-y').value;
+  const startCoins = parseInt(document.getElementById('agent-start-coins').value) || 0;
+  const startBullets = parseInt(document.getElementById('agent-start-bullets').value) || 0;
+  const startHealth = parseInt(document.getElementById('agent-start-health').value) || 0;
+  const startAxe = document.getElementById('agent-start-axe').checked;
+
+  // Position: use grid coords if provided, otherwise random
+  let spawnX, spawnY;
+  if (startX !== '' && startY !== '') {
+    const pos = Grid.toPixel(parseInt(startX), parseInt(startY));
+    spawnX = pos.x;
+    spawnY = pos.y;
+  } else {
+    spawnX = 100 + Math.random() * (world.width - 200);
+    spawnY = 100 + Math.random() * (world.height - 200);
+  }
+
   const agent = new Agent({
     name,
     model,
@@ -71,9 +91,15 @@ btnAddAgent.addEventListener('click', () => {
     friends,
     enableInstincts,
     systemPrompt: prompt,
-    x: 100 + Math.random() * (world.width - 200),
-    y: 100 + Math.random() * (world.height - 200),
+    x: spawnX,
+    y: spawnY,
   });
+
+  // Apply optional loadout
+  if (startCoins > 0) agent.coins = startCoins;
+  if (startBullets > 0) agent.bullets = startBullets;
+  if (startHealth > 0) agent.health = Math.min(startHealth, agent.maxHealth);
+  if (startAxe) agent.hasAxe = true;
   world.addAgent(agent);
   addLog(name, 'Entered the arena', color);
 });
@@ -88,11 +114,8 @@ btnAddShop.addEventListener('click', () => {
 // Spawn coins
 btnAddCoins.addEventListener('click', () => {
   for (let i = 0; i < 5; i++) {
-    const coin = new Item({
-      type: 'coin',
-      x: 50 + Math.random() * (world.width - 100),
-      y: 50 + Math.random() * (world.height - 100),
-    });
+    const pos = Grid.snap(50 + Math.random() * (world.width - 100), 50 + Math.random() * (world.height - 100));
+    const coin = new Item({ type: 'coin', x: pos.x, y: pos.y });
     world.addItem(coin);
   }
   addLog('World', '5 coins spawned', '#ffdd44');
@@ -276,10 +299,7 @@ function updateInfoPanel() {
     `Inventory: ${agent.inventory.join(', ') || 'empty'}\n` +
     `Pos: (${Math.round(agent.x)}, ${Math.round(agent.y)})\n` +
     `Stress: ${agent.stress}/10\n` +
-    `Goals:\n` +
-    `  HIGH: ${agent.goals.high || '(none)'}\n` +
-    `  MID:  ${agent.goals.mid || '(none)'}\n` +
-    `  LOW:  ${agent.goals.low || '(none)'}\n` +
+    `Goal: ${agent.goal || '(none)'}\n` +
     `Relationships:\n${rels}\n` +
     `House: ${agent.insideHouse ? 'INSIDE (healing)' : 'not inside'}\n` +
     `Instincts: ${agent.enableInstincts ? (agent.instincts.length > 0 ? agent.instincts.map(i => i.trigger).join(', ') : 'none set') : 'disabled'}\n` +
@@ -509,11 +529,8 @@ requestAnimationFrame(gameLoop);
 
 // Spawn some initial coins
 for (let i = 0; i < 8; i++) {
-  world.addItem(new Item({
-    type: 'coin',
-    x: 50 + Math.random() * (world.width - 100),
-    y: 50 + Math.random() * (world.height - 100),
-  }));
+  const pos = Grid.snap(50 + Math.random() * (world.width - 100), 50 + Math.random() * (world.height - 100));
+  world.addItem(new Item({ type: 'coin', x: pos.x, y: pos.y }));
 }
 
 // Spawn initial trees

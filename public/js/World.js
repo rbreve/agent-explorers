@@ -1,10 +1,11 @@
 import * as THREE from 'three';
+import { Grid, TILE_SIZE, GRID_COLS, GRID_ROWS, WORLD_WIDTH, WORLD_HEIGHT } from './Grid.js';
 
 export class World {
   constructor(canvas) {
     this.canvas = canvas;
-    this.width = 1200;
-    this.height = 800;
+    this.width = WORLD_WIDTH;
+    this.height = WORLD_HEIGHT;
     this.agents = [];
     this.bullets = [];
     this.items = [];
@@ -78,9 +79,8 @@ export class World {
     tex.minFilter = THREE.NearestFilter;
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
-    // Tile the grass texture across the world (each tile = 32px world units)
-    const tileSize = 32;
-    tex.repeat.set(this.width / tileSize, this.height / tileSize);
+    // Tile the grass texture across the world
+    tex.repeat.set(GRID_COLS, GRID_ROWS);
 
     const geo = new THREE.PlaneGeometry(this.width, this.height);
     const mat = new THREE.MeshBasicMaterial({ map: tex });
@@ -173,6 +173,58 @@ export class World {
     }
   }
 
+  // Find a targetable entity by name/type from the perspective of a source entity.
+  // Searches agents, spiders, and interactive items. Returns { entity, dist, kind } or null.
+  // kind: 'agent' | 'spider' | 'item'
+  findTarget(name, sourceX, sourceY, maxRange = Infinity) {
+    if (!name) return null;
+    const lname = name.toLowerCase();
+    let best = null;
+    let bestDist = maxRange;
+
+    // Search agents by name
+    for (const agent of this.agents) {
+      if (agent.dead) continue;
+      if (agent.name.toLowerCase() === lname) {
+        const d = Math.hypot(agent.x - sourceX, agent.y - sourceY);
+        if (d < bestDist) { best = { entity: agent, dist: d, kind: 'agent' }; bestDist = d; }
+      }
+    }
+
+    // Search spiders by type
+    for (const spider of this.spiders) {
+      if (spider.dead) continue;
+      if ('spider'.startsWith(lname) || lname.includes('spider')) {
+        const d = Math.hypot(spider.x - sourceX, spider.y - sourceY);
+        if (d < bestDist) { best = { entity: spider, dist: d, kind: 'spider' }; bestDist = d; }
+      }
+    }
+
+    // Search items by type (for attackable/interactive items)
+    for (const item of this.items) {
+      if (item.type.toLowerCase() === lname || item.type.toLowerCase().includes(lname)) {
+        const d = Math.hypot(item.x - sourceX, item.y - sourceY);
+        if (d < bestDist) { best = { entity: item, dist: d, kind: 'item' }; bestDist = d; }
+      }
+    }
+
+    return best;
+  }
+
+  // Find all entities of a kind near a position
+  findNearby(kind, sourceX, sourceY, range) {
+    const results = [];
+    const sources = kind === 'agent' ? this.agents
+      : kind === 'spider' ? this.spiders
+      : this.items;
+    for (const entity of sources) {
+      if (entity.dead) continue;
+      const d = Math.hypot(entity.x - sourceX, entity.y - sourceY);
+      if (d <= range) results.push({ entity, dist: d, kind });
+    }
+    return results;
+  }
+
   addAgent(agent) {
     this.agents.push(agent);
     agent.addToScene(this.scene);
@@ -233,7 +285,7 @@ export class World {
           health: other.health,
           coins: other.coins,
           type: other.agentType,
-          dist: Math.round(dist),
+          dist: Grid.tileDistance(agent.x, agent.y, other.x, other.y),
           rel: agent.relationships[other.name] || 'neutral',
         });
         // Only last 5 messages to save tokens
@@ -251,7 +303,7 @@ export class World {
       if (item.type === 'rock' && item.isBroken) continue; // broken rocks disappear
       const dist = Math.hypot(item.x - agent.x, item.y - agent.y);
       if (dist <= agent.awarenessRadius) {
-        const entry = { type: item.type, x: Math.round(item.x), y: Math.round(item.y), dist: Math.round(dist) };
+        const entry = { type: item.type, x: Math.round(item.x), y: Math.round(item.y), dist: Grid.tileDistance(agent.x, agent.y, item.x, item.y) };
         if (item.type === 'shop' && item.shopInventory) {
           entry.shop = true;
           entry.shopName = item.shopName || 'Shop';
@@ -298,7 +350,7 @@ export class World {
       if (spider.dead) continue;
       const dist = Math.hypot(spider.x - agent.x, spider.y - agent.y);
       if (dist <= agent.awarenessRadius) {
-        nearbySpiders.push({ type: 'spider', x: Math.round(spider.x), y: Math.round(spider.y), dist: Math.round(dist), hp: spider.health });
+        nearbySpiders.push({ type: 'spider', x: Math.round(spider.x), y: Math.round(spider.y), dist: Grid.tileDistance(agent.x, agent.y, spider.x, spider.y), hp: spider.health });
       }
     }
 
@@ -319,12 +371,15 @@ export class World {
     // Check if agent is at a shop
     const atShopItem = this.items.find(i => i.type === 'shop' && Math.hypot(i.x - agent.x, i.y - agent.y) <= agent.radius + i.radius);
 
-    // Exploration — unexplored areas
+    // Helper: pixel → grid label
+    const g = (px, py) => Grid.toLabel(px, py);
+
+    // Exploration — unexplored areas (in grid coords)
     const unexplored = [];
     for (let qx = 0; qx < 4; qx++) {
       for (let qy = 0; qy < 3; qy++) {
         if (!agent.visitedQuadrants.has(`${qx},${qy}`)) {
-          unexplored.push(`(${qx * 300 + 150},${qy * 267 + 133})`);
+          unexplored.push(g(qx * 300 + 150, qy * 267 + 133));
         }
       }
     }
@@ -340,8 +395,8 @@ export class World {
     if (hw) urgentLines.push(hw);
     if (nearbySpiders.length > 0) {
       const closest = nearbySpiders.reduce((a, b) => a.dist < b.dist ? a : b);
-      if (closest.dist < 60) {
-        urgentLines.push(`DANGER! Spider very close (${closest.dist} away)!`);
+      if (closest.dist <= 2) {
+        urgentLines.push(`DANGER! Spider very close (${closest.dist} tiles away)!`);
       }
     }
     if (systemAlerts.length > 0) {
@@ -374,7 +429,7 @@ export class World {
 
     // YOU section
     lines.push('YOU:');
-    lines.push(`  Position: (${Math.round(agent.x)}, ${Math.round(agent.y)})`);
+    lines.push(`  Position: ${g(agent.x, agent.y)}`);
     if (agent.insideHouse) lines.push('  Current Location: INSIDE YOUR HOUSE (healing, safe from damage)');
     else if (atShopItem) lines.push(`  Current Location: SHOP "${atShopItem.shopName || 'Shop'}"`);
     lines.push(`  HP: ${agent.health}/${agent.stats.maxHealth.value} (${Math.round(healthPct * 100)}%)`);
@@ -389,22 +444,20 @@ export class World {
     const tools = [];
     if (agent.hasAxe) tools.push('Axe');
     if (agent.hasHammer) tools.push('Hammer');
-    if (tools.length > 0) lines.push(`  Tools: ${tools.join(', ')}`);
+    lines.push(`  Tools: ${tools.length > 0 ? tools.join(', ') : 'none'}`);
+    if (agent.inventory.length > 0) lines.push(`  Inventory: ${agent.inventory.join(', ')}`);
     lines.push(`  Damage: ${agent.stats.firepower.value} | Speed: ${agent.stats.speed.value} | Reach: ${agent.stats.reach.value}`);
     if (agent.attackCooldownTimer > 0) lines.push('  Weapon: cooling down');
     lines.push(`  Stress: ${agent.stress}/10`);
     lines.push('');
 
     // Goals
-    if (agent.goals.high || agent.goals.mid || agent.goals.low) {
-      lines.push('GOALS:');
-      if (agent.goals.high) lines.push(`  HIGH: ${agent.goals.high}`);
-      if (agent.goals.mid) lines.push(`  MID: ${agent.goals.mid}`);
-      if (agent.goals.low) lines.push(`  LOW: ${agent.goals.low}`);
+    if (agent.goal) {
+      lines.push(`GOAL: ${agent.goal}`);
       lines.push('');
     }
 
-    // Last action
+    // Last action + result
     if (agent.lastDecision) {
       const d = agent.lastDecision;
       let lastStr = `${d.action}`;
@@ -412,8 +465,12 @@ export class World {
       if (d.to) lastStr += ` to=${d.to}`;
       if (d.items) lastStr += ` items=${d.items.join(',')}`;
       if (d.item) lastStr += ` item=${d.item}`;
-      if (d.targetX != null) lastStr += ` at=(${d.targetX},${d.targetY})`;
+      if (d.targetX != null) lastStr += ` at=${g(d.targetX, d.targetY)}`;
       lines.push(`LAST ACTION: ${lastStr}`);
+      if (agent.lastActionResult) {
+        const r = agent.lastActionResult;
+        lines.push(`  Result: ${r.success ? 'SUCCESS' : 'FAILED'} — ${r.message}`);
+      }
       if (d.thought) lines.push(`  Thought: "${d.thought}"`);
       lines.push('');
     }
@@ -423,7 +480,7 @@ export class World {
       lines.push('NEARBY AGENTS:');
       for (const a of nearby) {
         const rel = agent.relationships[a.name] || 'neutral';
-        lines.push(`  ${a.name} [${rel}] — HP:${a.hp} Coins:${a.coins} at (${a.x},${a.y}) dist:${a.dist}`);
+        lines.push(`  ${a.name} [${rel}] — HP:${a.hp} Coins:${a.coins} at ${g(a.x,a.y)} dist:${a.dist}`);
       }
       lines.push('');
     }
@@ -432,9 +489,9 @@ export class World {
     if (nearbyItems.length > 0) {
       lines.push('NEARBY ITEMS:');
       for (const it of nearbyItems) {
-        let desc = `${it.type} at (${it.x},${it.y}) dist:${it.dist}`;
+        let desc = `${it.type} at ${g(it.x,it.y)} dist:${it.dist}`;
         if (it.shop) {
-          desc = `SHOP "${it.shopName}" at (${it.x},${it.y}) dist:${it.dist}`;
+          desc = `SHOP "${it.shopName}" at ${g(it.x,it.y)} dist:${it.dist}`;
           if (it.atShop && it.inventory) {
             lines.push(`  ${desc}`);
             lines.push('    INVENTORY:');
@@ -446,7 +503,7 @@ export class World {
           }
         }
         if (it.type === 'house') {
-          desc = `HOUSE (${it.owner}'s) at (${it.x},${it.y}) dist:${it.dist}`;
+          desc = `HOUSE (${it.owner}'s) at ${g(it.x,it.y)} dist:${it.dist}`;
           if (it.isYours) desc += it.occupied ? ' [you are inside]' : ' [yours — use enter_house]';
           else desc += it.occupied ? ' [occupied]' : '';
         }
@@ -465,7 +522,7 @@ export class World {
     if (nearbySpiders.length > 0) {
       lines.push('SPIDERS:');
       for (const s of nearbySpiders) {
-        lines.push(`  Spider at (${s.x},${s.y}) dist:${s.dist} HP:${s.hp}`);
+        lines.push(`  Spider at ${g(s.x,s.y)} dist:${s.dist} HP:${s.hp}`);
       }
       lines.push('');
     }
@@ -509,13 +566,13 @@ export class World {
 
     // Known locations
     if (agent.knownShops.length > 0) {
-      lines.push(`KNOWN SHOPS: ${agent.knownShops.map(s => `(${s.x},${s.y})`).join(', ')}`);
+      lines.push(`KNOWN SHOPS: ${agent.knownShops.map(s => g(s.x,s.y)).join(', ')}`);
     }
     if (unexplored.length > 0 && unexplored.length < 12) {
       lines.push(`UNEXPLORED AREAS: ${unexplored.join(', ')}`);
     }
 
-    lines.push(`WORLD SIZE: ${this.width}x${this.height}`);
+    lines.push(`WORLD GRID: ${GRID_COLS}x${GRID_ROWS} (coords 0-${GRID_COLS-1}, 0-${GRID_ROWS-1})`);
 
     return lines.join('\n');
   }
@@ -535,14 +592,14 @@ export class World {
       if (agent.healthPacks > 0) return 'CRITICAL HEALTH LOW!';
       if (nearbyShop && hasCoins) return 'CRITICAL HEALTH LOW';
       if (nearbyHP) return 'CRITICAL, there is a health pack nearby';
-      if (knowsShop && hasCoins) return `CRITICAL! Rush to shop at (${agent.knownShops[0].x},${agent.knownShops[0].y})!`;
+      if (knowsShop && hasCoins) return `CRITICAL! Rush to shop at ${Grid.toLabel(agent.knownShops[0].x, agent.knownShops[0].y)}!`;
       return 'CRITICAL! About to die. Find health!';
     }
     if (pct <= 0.4) {
       if (agent.healthPacks > 0) return 'WARNING: Health low.';
       if (nearbyShop && hasCoins) return 'WARNING: Health low.';
       if (nearbyHP) return 'WARNING: Health low..';
-      if (knowsShop && hasCoins) return `WARNING: Shops at (${agent.knownShops[0].x},${agent.knownShops[0].y}).`;
+      if (knowsShop && hasCoins) return `WARNING: Shops at ${Grid.toLabel(agent.knownShops[0].x, agent.knownShops[0].y)}.`;
       return 'WARNING: Health low. Find healing.';
     }
     if (pct <= 0.6) {
@@ -596,6 +653,9 @@ export class World {
             spider.takeDamage(bullet.damage, this, bullet.owner);
             if (spider.dead && bullet.owner) {
               this.eventLog.push({ type: 'spider_kill', killer: bullet.owner.name, color: bullet.owner.color, x: Math.round(spider.x), y: Math.round(spider.y) });
+              bullet.owner.incomingMessages.push({ from: 'SYSTEM', message: `You killed a spider with a bullet! Loot dropped at ${Grid.toLabel(spider.x, spider.y)}.` });
+            } else if (!spider.dead && bullet.owner) {
+              bullet.owner.incomingMessages.push({ from: 'SYSTEM', message: `You hit a spider for ${bullet.damage} damage! Spider HP: ${spider.health}` });
             }
             bullet.removeFromScene(this.scene);
             this.bullets.splice(i, 1);
@@ -659,7 +719,7 @@ export class World {
         if (agent.dead || agent.agentType === 'shop' || agent.insideHouse) continue;
         const dist = Math.hypot(agent.x - spider.x, agent.y - spider.y);
         if (dist < agent.radius + spider.radius && spider.contactTimer <= 0) {
-          agent.takeDamage(spider.damage, null, this);
+          agent.takeDamage(spider.damage, { name: 'spider' }, this);
           agent.incomingMessages.push({
             from: 'SYSTEM',
             message: `A spider bit you for ${spider.damage} damage!`,

@@ -3,6 +3,7 @@ import { Bullet } from './Bullet.js';
 import { Item } from './Item.js';
 import { LLMController } from './LLMController.js';
 import { House, HOUSE_WOOD_COST, HOUSE_STONE_COST } from './House.js';
+import { Grid, GRID_COLS, GRID_ROWS, TILE_SIZE } from './Grid.js';
 
 export const BROADCAST_KILL = true;
 export const HEALTHPACK_HEAL = 45;
@@ -79,6 +80,7 @@ export class Agent {
     this.systemPrompt = config.systemPrompt || '';
     this.llm = new LLMController(this.model, this.temperature, this.provider, this.ollamaUrl);
     this.lastDecision = null;
+    this.lastActionResult = null; // { success: bool, message: string }
     this.pendingDecision = false;
     this.needsReassess = false;
     this.decisionCooldown = 0;       // seconds remaining before next LLM call
@@ -108,11 +110,7 @@ export class Agent {
     for (const f of this.friends) {
       this.relationships[f] = 'ally';
     }
-    this.goals = {
-      high: '',   // Survival, immediate threats
-      mid: '',    // Current objective (buy items, go to shop, etc.)
-      low: '',    // Long-term plans (explore, build alliances, etc.)
-    };
+    this.goal = '';
 
     // Memory
     this.knownShops = []; // [{x, y}] — remembered shop locations
@@ -124,8 +122,8 @@ export class Agent {
 
     // Health decay
     this.healthDecayTimer = 0;
-    this.healthDecayInterval = 5.0; // lose HP every 5 seconds
-    this.healthDecayAmount = 2;
+    this.healthDecayInterval = 15.0; // lose HP every 5 seconds
+    this.healthDecayAmount = 1;
 
     // State
     this.dead = false;
@@ -640,11 +638,9 @@ export class Agent {
     for (let i = 0; i < this.coins; i++) {
       const angle = (Math.PI * 2 * i) / this.coins + Math.random() * 0.5;
       const dist = 20 + Math.random() * 30;
-      const coin = new Item({
-        type: 'coin',
-        x: Math.max(10, Math.min(world.width - 10, this.x + Math.cos(angle) * dist)),
-        y: Math.max(10, Math.min(world.height - 10, this.y + Math.sin(angle) * dist)),
-      });
+      const raw = { x: this.x + Math.cos(angle) * dist, y: this.y + Math.sin(angle) * dist };
+      const pos = Grid.snap(Math.max(10, Math.min(world.width - 10, raw.x)), Math.max(10, Math.min(world.height - 10, raw.y)));
+      const coin = new Item({ type: 'coin', x: pos.x, y: pos.y });
       world.addItem(coin);
     }
     this.coins = 0;
@@ -744,7 +740,7 @@ export class Agent {
 
     try {
       const perception = world.getPerception(this);
-      const decision = await this.llm.decide(this.systemPrompt, perception, this.name, this.goals);
+      const decision = await this.llm.decide(this.systemPrompt, perception, this.name, this.goal);
       if (decision) {
         console.log(`[LOG_LLM_OUTPUT][${new Date().toLocaleTimeString()}][${this.name}]`, JSON.stringify(decision));
       }
@@ -762,79 +758,65 @@ export class Agent {
 
   _executeDecision(decision, world) {
     if (!decision) return;
+    this.lastActionResult = null;
 
-    // Movement
+    // Movement — convert grid coords to pixel if values are small (grid range)
     if (decision.action === 'move' && decision.targetX != null && decision.targetY != null) {
-      this.targetX = Math.max(this.radius, Math.min(world.width - this.radius, decision.targetX));
-      this.targetY = Math.max(this.radius, Math.min(world.height - this.radius, decision.targetY));
+      let px = decision.targetX;
+      let py = decision.targetY;
+      // If coords look like grid values (within grid range), convert to pixel center
+      if (px <= GRID_COLS && py <= GRID_ROWS) {
+        const pixel = Grid.toPixel(px, py);
+        px = pixel.x;
+        py = pixel.y;
+      }
+      this.targetX = Math.max(this.radius, Math.min(world.width - this.radius, px));
+      this.targetY = Math.max(this.radius, Math.min(world.height - this.radius, py));
+      this.lastActionResult = { success: true, message: `Moving to ${Grid.toLabel(this.targetX, this.targetY)}` };
     }
 
-    // Attack — by target name (agent or spider)
+    // Attack (ranged) — find target generically via world.findTarget
     if (decision.action === 'attack' && decision.target) {
-      // Check agents first
-      const targetAgent = world.agents.find(a => a.name === decision.target && !a.dead);
-      if (targetAgent) {
-        this.attack(targetAgent.x, targetAgent.y, world, targetAgent);
-      } else if (/spider/i.test(decision.target)) {
-        // Find nearest spider
-        let closest = null;
-        let closestDist = Infinity;
-        for (const spider of world.spiders) {
-          if (spider.dead) continue;
-          const d = Math.hypot(spider.x - this.x, spider.y - this.y);
-          if (d < closestDist) { closestDist = d; closest = spider; }
-        }
-        if (closest) {
-          this.attack(closest.x, closest.y, world, closest);
+      if (this.bullets <= 0) {
+        this.lastActionResult = { success: false, message: "No bullets! Use melee_attack (requires axe/hammer) or buy bullets." };
+      } else if (this.attackCooldownTimer > 0) {
+        this.lastActionResult = { success: false, message: 'Weapon still cooling down.' };
+      } else {
+        const found = world.findTarget(decision.target, this.x, this.y);
+        if (found) {
+          this.attack(found.entity.x, found.entity.y, world, found.entity);
+          this.lastActionResult = { success: true, message: `Shot at ${decision.target}` };
+        } else {
+          this.lastActionResult = { success: false, message: `Target "${decision.target}" not found nearby.` };
         }
       }
     }
-    // Legacy: attack by coordinates
+    // Attack by coordinates
     if (decision.action === 'attack' && !decision.target && decision.targetX != null && decision.targetY != null) {
       this.attack(decision.targetX, decision.targetY, world);
     }
 
-    // Melee attack — hit nearby spider/agent with axe or hammer
+    // Melee attack — hit nearby target with axe or hammer
     if (decision.action === 'melee_attack' || decision.action === 'melee') {
       const meleeRange = this.radius + 30;
       const weapon = this.hasAxe ? 'axe' : this.hasHammer ? 'hammer' : null;
       if (!weapon) {
-        this.incomingMessages.push({ from: 'SYSTEM', message: 'You need an axe or hammer to melee attack!' });
+        this.lastActionResult = { success: false, message: 'You have no axe or hammer! Buy one from shop or run away!' };
       } else {
         const dmg = weapon === 'axe' ? AXE_DAMAGE : HAMMER_DAMAGE;
-        let hit = false;
+        const found = world.findTarget(decision.target || 'spider', this.x, this.y, meleeRange);
 
-        // Target spider
-        if (!decision.target || /spider/i.test(decision.target)) {
-          let closest = null;
-          let closestDist = Infinity;
-          for (const spider of world.spiders) {
-            if (spider.dead) continue;
-            const d = Math.hypot(spider.x - this.x, spider.y - this.y);
-            if (d < meleeRange && d < closestDist) { closestDist = d; closest = spider; }
+        if (found && found.entity.takeDamage) {
+          found.entity.takeDamage(dmg, world, this);
+          const targetName = found.entity.name || found.kind;
+          if (found.entity.dead) {
+            world.eventLog.push({ type: `${found.kind}_kill`, killer: this.name, color: this.color, x: Math.round(found.entity.x), y: Math.round(found.entity.y) });
+            this.lastActionResult = { success: true, message: `Killed ${targetName} with ${weapon}!` };
+          } else {
+            this.lastActionResult = { success: true, message: `Hit ${targetName} with ${weapon} for ${dmg} dmg. Target HP: ${found.entity.health}` };
           }
-          if (closest) {
-            closest.takeDamage(dmg, this, world);
-            if (closest.dead) {
-              world.eventLog.push({ type: 'spider_kill', killer: this.name, color: this.color, x: Math.round(closest.x), y: Math.round(closest.y) });
-            }
-            this.incomingMessages.push({ from: 'SYSTEM', message: `You hit a spider with your ${weapon} for ${dmg} damage!` });
-            hit = true;
-          }
-        }
-
-        // Target agent
-        if (!hit && decision.target && !/spider/i.test(decision.target)) {
-          const targetAgent = world.agents.find(a => a.name === decision.target && !a.dead);
-          if (targetAgent && Math.hypot(targetAgent.x - this.x, targetAgent.y - this.y) < meleeRange) {
-            targetAgent.takeDamage(dmg, this, world);
-            this.incomingMessages.push({ from: 'SYSTEM', message: `You hit ${decision.target} with your ${weapon} for ${dmg} damage!` });
-            hit = true;
-          }
-        }
-
-        if (!hit) {
-          this.incomingMessages.push({ from: 'SYSTEM', message: 'Nothing close enough to hit.' });
+        } else {
+          this.lastActionResult = { success: false, message: 'Nothing close enough to hit.' };
         }
         this.attackCooldownTimer = this.attackCooldown;
       }
@@ -854,10 +836,16 @@ export class Agent {
     // Send message — system routes it to the target agent
     if ((decision.action === 'send_message' || decision.action === 'talk') && decision.to && decision.message) {
       this.sendMessage(decision.to, decision.message, world);
+      this.lastActionResult = { success: true, message: `Sent message to ${decision.to}` };
       // Optionally move while messaging
       if (decision.targetX != null && decision.targetY != null) {
-        this.targetX = Math.max(this.radius, Math.min(world.width - this.radius, decision.targetX));
-        this.targetY = Math.max(this.radius, Math.min(world.height - this.radius, decision.targetY));
+        let px = decision.targetX, py = decision.targetY;
+        if (px <= GRID_COLS && py <= GRID_ROWS) {
+          const pixel = Grid.toPixel(px, py);
+          px = pixel.x; py = pixel.y;
+        }
+        this.targetX = Math.max(this.radius, Math.min(world.width - this.radius, px));
+        this.targetY = Math.max(this.radius, Math.min(world.height - this.radius, py));
       }
     }
 
@@ -871,11 +859,13 @@ export class Agent {
       this.relationships[decision.setRelationshipTo] = decision.setRelationship;
     }
 
-    // Update goals if the LLM decided to
+    // Update goal
+    if (decision.setGoal != null) {
+      this.goal = decision.setGoal;
+    }
+    // Backward compat: if LLM sends setGoals, use high
     if (decision.setGoals) {
-      if (decision.setGoals.high != null) this.goals.high = decision.setGoals.high;
-      if (decision.setGoals.mid != null) this.goals.mid = decision.setGoals.mid;
-      if (decision.setGoals.low != null) this.goals.low = decision.setGoals.low;
+      this.goal = decision.setGoals.high || decision.setGoals.mid || decision.setGoals.low || '';
     }
 
     // Use a health pack from inventory
@@ -883,6 +873,9 @@ export class Agent {
       if (this.healthPacks > 0) {
         this.healthPacks--;
         this.health = Math.min(this.maxHealth, this.health + HEALTHPACK_HEAL);
+        this.lastActionResult = { success: true, message: `Healed ${HEALTHPACK_HEAL} HP. HP: ${this.health}` };
+      } else {
+        this.lastActionResult = { success: false, message: 'No healthpacks in inventory.' };
       }
     }
 
@@ -892,15 +885,15 @@ export class Agent {
       for (const item of world.items) {
         if (item.type !== 'apple_tree' || item.apples <= 0) continue;
         const dist = Math.hypot(item.x - this.x, item.y - this.y);
-        if (dist < this.radius + item.radius + 10) { found = item; break; }
+        if (dist < TILE_SIZE) { found = item; break; }
       }
       if (found) {
         found.apples--;
         this.apples++;
         this._updateStatsLabel();
-        this.incomingMessages.push({ from: 'SYSTEM', message: `You picked an apple! (${found.apples} left on tree)` });
+        this.lastActionResult = { success: true, message: `Picked apple (${found.apples} left on tree)` };
       } else {
-        this.incomingMessages.push({ from: 'SYSTEM', message: 'No apple tree nearby with apples.' });
+        this.lastActionResult = { success: false, message: 'No apple tree nearby with apples.' };
       }
     }
 
@@ -910,8 +903,9 @@ export class Agent {
         this.apples--;
         this.health = Math.min(this.maxHealth, this.health + APPLE_HEAL);
         this._updateStatsLabel();
+        this.lastActionResult = { success: true, message: `Ate apple, healed ${APPLE_HEAL} HP. HP: ${this.health}` };
       } else {
-        this.incomingMessages.push({ from: 'SYSTEM', message: "You don't have any apples to eat." });
+        this.lastActionResult = { success: false, message: 'No apples in inventory.' };
       }
     }
 
@@ -923,7 +917,7 @@ export class Agent {
         if (!item.grabbable) continue;
         if (targetType && item.type !== targetType) continue;
         const dist = Math.hypot(item.x - this.x, item.y - this.y);
-        if (dist < this.radius + item.radius + 10) { found = item; break; }
+        if (dist < TILE_SIZE) { found = item; break; }
       }
       if (found) {
         const picked = found.onPickup(this);
@@ -932,42 +926,35 @@ export class Agent {
           const idx = world.items.indexOf(found);
           if (idx !== -1) world.items.splice(idx, 1);
           this._updateStatsLabel();
-          this.incomingMessages.push({ from: 'SYSTEM', message: `You grabbed a ${found.type.replace(/_/g, ' ')}!` });
+          this.lastActionResult = { success: true, message: `Grabbed ${found.type.replace(/_/g, ' ')}` };
         }
       } else {
-        this.incomingMessages.push({ from: 'SYSTEM', message: `Nothing grabbable nearby${targetType ? ` of type ${targetType}` : ''}.` });
+        this.lastActionResult = { success: false, message: `Nothing grabbable nearby${targetType ? ` (${targetType})` : ''}.` };
       }
     }
 
-    // Sell bullets (1 coin each)
-    if (decision.action === 'sell_bullets' && decision.amount > 0) {
-      const actual = Math.min(decision.amount, this.bullets);
-      if (actual > 0) {
-        this.bullets -= actual;
-        this.coins += actual;
+    // Sell resources — "sell_<type>" or "sell" with item field
+    if (decision.action.startsWith('sell')) {
+      const sellType = decision.action === 'sell'
+        ? decision.item
+        : decision.action.slice(5); // "sell_wood" → "wood"
+      if (sellType) {
+        const amount = decision.amount || 1;
+        this._sell(sellType, amount, world);
       }
     }
 
-    if (decision.action === 'sell_wood' && decision.amount > 0) {
-      const actual = Math.min(decision.amount, this.wood);
-      if (actual > 0) {
-        this.wood -= actual;
-        this.coins += actual * 3;
+    // Give items to a nearby agent — supports "give" or "give_<type>"
+    if (decision.to && decision.amount > 0) {
+      let giveType = null;
+      if (decision.action === 'give') {
+        giveType = decision.item;
+      } else if (decision.action.startsWith('give_')) {
+        giveType = decision.action.slice(5); // "give_coins" → "coins"
       }
-    }
-
-    // Give items to a nearby agent (unified + backward compat)
-    if (decision.action === 'give' && decision.to && decision.item && decision.amount > 0) {
-      this._give(decision.to, decision.item, decision.amount, world);
-    }
-    if (decision.action === 'give_coins' && decision.to && decision.amount > 0) {
-      this._give(decision.to, 'coins', decision.amount, world);
-    }
-    if (decision.action === 'give_bullets' && decision.to && decision.amount > 0) {
-      this._give(decision.to, 'bullets', decision.amount, world);
-    }
-    if (decision.action === 'give_healthpack' && decision.to && decision.amount > 0) {
-      this._give(decision.to, 'healthpacks', decision.amount, world);
+      if (giveType) {
+        this._give(decision.to, giveType, decision.amount, world);
+      }
     }
 
     // Trade with a nearby agent
@@ -982,35 +969,35 @@ export class Agent {
         const item = world.items[i];
         if (item.type !== 'treasure') continue;
         const dist = Math.hypot(item.x - this.x, item.y - this.y);
-        if (dist < this.radius + item.radius + 10) {
+        if (dist < TILE_SIZE) {
           if (this.keys > 0) {
             this.keys--;
             this.coins += 10;
-            this.incomingMessages.push({ from: 'SYSTEM', message: 'You opened the treasure chest and found 10 coins!' });
+            this.lastActionResult = { success: true, message: 'Opened treasure chest — found 10 coins!' };
             item.removeFromScene(world.scene);
             world.items.splice(i, 1);
             opened = true;
           } else {
-            this.incomingMessages.push({ from: 'SYSTEM', message: 'You need a key to open this treasure chest!' });
+            this.lastActionResult = { success: false, message: 'Need a key to open treasure chest.' };
           }
           break;
         }
       }
-      if (!opened && !world.items.some(i => i.type === 'treasure' && Math.hypot(i.x - this.x, i.y - this.y) < this.radius + i.radius + 10)) {
-        this.incomingMessages.push({ from: 'SYSTEM', message: 'There is no treasure chest nearby to open.' });
+      if (!opened && !this.lastActionResult) {
+        this.lastActionResult = { success: false, message: 'No treasure chest nearby.' };
       }
     }
 
     // Cut tree — start work action
     if (decision.action === 'cut_tree') {
       if (!this.hasAxe) {
-        this.incomingMessages.push({ from: 'SYSTEM', message: "You can't cut this tree with your bare hands!" });
+        this.lastActionResult = { success: false, message: 'Need an axe to cut trees! Buy one from the shop.' };
       } else {
         let found = null;
         for (const item of world.items) {
           if (item.type !== 'tree' || item.isCut) continue;
           const dist = Math.hypot(item.x - this.x, item.y - this.y);
-          if (dist < this.radius + item.radius + 10) { found = item; break; }
+          if (dist < TILE_SIZE) { found = item; break; }
         }
         if (found) {
           // Cut tree and drop wood immediately
@@ -1029,9 +1016,9 @@ export class Agent {
           this.targetX = null; this.targetY = null;
           this.vx = 0; this.vy = 0;
           new Audio('/sounds/cut_tree.wav').play().catch(e => console.warn('[SOUND] cut_tree blocked:', e.message));
-          this.incomingMessages.push({ from: 'SYSTEM', message: 'You cut down a tree!' });
+          this.lastActionResult = { success: true, message: 'Cut down a tree! Got wood.' };
         } else {
-          this.incomingMessages.push({ from: 'SYSTEM', message: 'There is no tree nearby to cut.' });
+          this.lastActionResult = { success: false, message: 'No tree nearby to cut.' };
         }
       }
     }
@@ -1039,20 +1026,21 @@ export class Agent {
     // Break rock — start work action
     if (decision.action === 'break_rock') {
       if (!this.hasHammer) {
-        this.incomingMessages.push({ from: 'SYSTEM', message: "You need a hammer to break rocks!" });
+        this.lastActionResult = { success: false, message: 'Need a hammer to break rocks! Buy one from the shop.' };
       } else {
         let found = null;
         for (const item of world.items) {
           if (item.type !== 'rock' || item.isBroken) continue;
           const dist = Math.hypot(item.x - this.x, item.y - this.y);
-          if (dist < this.radius + item.radius + 10) { found = item; break; }
+          if (dist < TILE_SIZE) { found = item; break; }
         }
         if (found) {
           // Break rock and drop loot immediately
           found.breakRock();
           this.stones++;
           if (found.hasGold) {
-            world.addItem(new Item({ type: 'coin', x: found.x, y: found.y }));
+            const gpos = Grid.snap(found.x, found.y);
+            world.addItem(new Item({ type: 'coin', x: gpos.x, y: gpos.y }));
           }
           found.removeFromScene(world.scene);
           const idx = world.items.indexOf(found);
@@ -1062,10 +1050,9 @@ export class Agent {
           this.targetX = null; this.targetY = null;
           this.vx = 0; this.vy = 0;
           new Audio('/sounds/hammer_rock.wav').play().catch(e => console.warn('[SOUND] hammer_rock blocked:', e.message));
-          const rockMsg = found.hasGold ? 'You broke a rock and found gold + 1 stone!' : 'You broke a rock and got 1 stone.';
-          this.incomingMessages.push({ from: 'SYSTEM', message: rockMsg });
+          this.lastActionResult = { success: true, message: found.hasGold ? 'Broke rock — found gold + 1 stone!' : 'Broke rock — got 1 stone.' };
         } else {
-          this.incomingMessages.push({ from: 'SYSTEM', message: 'There is no rock nearby to break.' });
+          this.lastActionResult = { success: false, message: 'No rock nearby to break.' };
         }
       }
     }
@@ -1091,14 +1078,14 @@ export class Agent {
         const needs = [];
         if (this.wood < HOUSE_WOOD_COST) needs.push(`${HOUSE_WOOD_COST} wood (have ${this.wood})`);
         if (this.stones < HOUSE_STONE_COST) needs.push(`${HOUSE_STONE_COST} stones (have ${this.stones})`);
-        this.incomingMessages.push({ from: 'SYSTEM', message: `Need ${needs.join(' and ')} to build a house.` });
+        this.lastActionResult = { success: false, message: `Need ${needs.join(' and ')} to build.` };
       } else {
         this.wood -= HOUSE_WOOD_COST;
         this.stones -= HOUSE_STONE_COST;
         const house = new House({ x: this.x, y: this.y, owner: this });
         world.addItem(house);
         this._updateStatsLabel();
-        this.incomingMessages.push({ from: 'SYSTEM', message: 'You built a house! Enter it to heal and stay safe.' });
+        this.lastActionResult = { success: true, message: 'Built a house! Enter it to heal and stay safe.' };
       }
     }
 
@@ -1108,7 +1095,7 @@ export class Agent {
       for (const item of world.items) {
         if (item.type !== 'house' || item.owner !== this) continue;
         const dist = Math.hypot(item.x - this.x, item.y - this.y);
-        if (dist < this.radius + item.radius + 10) { found = item; break; }
+        if (dist < TILE_SIZE) { found = item; break; }
       }
       if (found) {
         if (found.enter(this)) {
@@ -1118,12 +1105,12 @@ export class Agent {
           this.vx = 0;
           this.vy = 0;
           this.mesh.material.opacity = 0.3;
-          this.incomingMessages.push({ from: 'SYSTEM', message: 'You entered your house. You are healing and safe from damage.' });
+          this.lastActionResult = { success: true, message: 'Entered house. Healing and safe from damage.' };
         } else {
-          this.incomingMessages.push({ from: 'SYSTEM', message: 'Cannot enter — house is occupied.' });
+          this.lastActionResult = { success: false, message: 'House is occupied.' };
         }
       } else {
-        this.incomingMessages.push({ from: 'SYSTEM', message: 'No house of yours nearby to enter.' });
+        this.lastActionResult = { success: false, message: 'No house nearby to enter.' };
       }
     }
 
@@ -1133,7 +1120,9 @@ export class Agent {
         this.insideHouse.exit();
         this.insideHouse = null;
         this.mesh.material.opacity = 1;
-        this.incomingMessages.push({ from: 'SYSTEM', message: 'You left your house.' });
+        this.lastActionResult = { success: true, message: 'Left house.' };
+      } else {
+        this.lastActionResult = { success: false, message: 'Not inside a house.' };
       }
     }
 
@@ -1158,6 +1147,7 @@ export class Agent {
     if (decision.action === 'idle') {
       this.targetX = null;
       this.targetY = null;
+      this.lastActionResult = { success: true, message: 'Waiting.' };
     }
   }
 
@@ -1170,11 +1160,11 @@ export class Agent {
         if (!shopItem) continue;
         // Prevent buying duplicate unique items
         if (itemName === 'axe' && this.hasAxe) {
-          this.incomingMessages.push({ from: 'SYSTEM', message: 'You already have an axe!' });
+          this.lastActionResult = { success: false, message: 'Already have an axe!' };
           return;
         }
         if (itemName === 'hammer' && this.hasHammer) {
-          this.incomingMessages.push({ from: 'SYSTEM', message: 'You already have a hammer!' });
+          this.lastActionResult = { success: false, message: 'Already have a hammer!' };
           return;
         }
         if (this.coins >= shopItem.price) {
@@ -1182,9 +1172,14 @@ export class Agent {
           this._applyUpgrade(shopItem.name);
           this.inventory.push(shopItem.name);
           this._updateStatsLabel();
+          this.lastActionResult = { success: true, message: `Bought ${itemName} for ${shopItem.price} coins.` };
+        } else {
+          this.lastActionResult = { success: false, message: `Not enough coins for ${itemName} (need ${shopItem.price}, have ${this.coins}).` };
         }
+        return;
       }
     }
+    this.lastActionResult = { success: false, message: 'No shop nearby or item not available.' };
   }
 
   _give(targetName, itemType, amount, world) {
@@ -1206,17 +1201,49 @@ export class Agent {
     };
     const info = itemMap[itemType];
     if (!info) {
-      this.incomingMessages.push({ from: 'SYSTEM', message: `Can't give "${itemType}" — unknown item type.` });
+      this.lastActionResult = { success: false, message: `Unknown item type: "${itemType}".` };
       return;
     }
     const actual = Math.min(amount, this[info.prop]);
     if (actual <= 0) {
-      this.incomingMessages.push({ from: 'SYSTEM', message: `You don't have any ${info.label}s to give.` });
+      this.lastActionResult = { success: false, message: `No ${info.label}s to give.` };
       return;
     }
     this[info.prop] -= actual;
     target[info.prop] += actual;
     target.incomingMessages.push({ from: this.name, message: `[Gave you ${actual} ${info.label}${actual > 1 ? 's' : ''}]` });
+    this.lastActionResult = { success: true, message: `Gave ${actual} ${info.label}${actual > 1 ? 's' : ''} to ${targetName}.` };
+  }
+
+  _sell(resourceType, amount, world) {
+    // Must be near a shop that has a sell_<type> entry
+    const shop = world.items.find(i =>
+      i.type === 'shop' && i.shopInventory &&
+      Math.hypot(i.x - this.x, i.y - this.y) <= this.awarenessRadius
+    );
+    if (!shop) {
+      this.lastActionResult = { success: false, message: 'No shop nearby to sell.' };
+      return;
+    }
+    const sellEntry = shop.shopInventory.find(si => si.name === `sell_${resourceType}`);
+    if (!sellEntry) {
+      this.lastActionResult = { success: false, message: `Shop doesn't buy ${resourceType}.` };
+      return;
+    }
+    const prop = this._resourceProp(resourceType);
+    if (!prop) {
+      this.lastActionResult = { success: false, message: `Unknown resource: ${resourceType}.` };
+      return;
+    }
+    const actual = Math.min(amount, this[prop]);
+    if (actual <= 0) {
+      this.lastActionResult = { success: false, message: `No ${resourceType} to sell.` };
+      return;
+    }
+    this[prop] -= actual;
+    this.coins += actual * sellEntry.price;
+    this._updateStatsLabel();
+    this.lastActionResult = { success: true, message: `Sold ${actual} ${resourceType} for ${actual * sellEntry.price} coins.` };
   }
 
   _resourceProp(type) {
@@ -1495,7 +1522,7 @@ export class Agent {
         this.incomingMessages.length > 0 ||
         world.spiders.some(s => !s.dead && Math.hypot(s.x - this.x, s.y - this.y) < this.awarenessRadius * 0.5);
 
-      if (hasUrgency || (isIdle && this.decisionCooldown <= 0)) {
+      if ((hasUrgency && this.decisionCooldown <= 0) || (isIdle && this.decisionCooldown <= 0)) {
         this.needsReassess = false;
         this.decisionCooldown = this.decisionCooldownTime;
         this.makeDecision(world);
