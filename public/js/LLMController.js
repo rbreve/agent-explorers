@@ -15,7 +15,8 @@ MOVEMENT:
 - {"action":"idle","thought":"why"} — do nothing this turn.
 
 COMBAT:
-- {"action":"attack","target":"name","thought":"why"} — shoot a bullet at an agent or spider or item Requires bullets > 0. Consumes 1 bullet per shot.
+- {"action":"attack","target":"name","thought":"why"} — shoot a bullet at an agent or spider or item. Requires bullets > 0. Consumes 1 bullet per shot.
+- {"action":"melee_attack","target":"name","thought":"why"} — hit a nearby spider or agent with your axe or hammer. Axe does 8 damage, hammer does 5. No bullets needed, but must be close.
 
 COMMUNICATION:
 - {"action":"send_message","to":"agent_name","message":"text","thought":"why"} — send a message to a nearby agent.
@@ -31,7 +32,7 @@ ITEMS:
 - {"action":"cut_tree","thought":"why"} — cut down a nearby tree.
 - {"action":"break_rock","thought":"why"} — break a nearby rock with your hammer. Some rocks contain gold!
 - {"action":"grab","item":"type","thought":"why"} — pick up a nearby grabbable item. Check "grabbable:true" in your perception.
-- {"action":"build_house","thought":"why"} — build a house at your current position. Requires 5 wood. Your house heals you and protects from damage.
+- {"action":"build_house","thought":"why"} — build a house at your current position. Requires 5 wood and 3 stones. Your house heals you and protects from damage.
 - {"action":"enter_house","thought":"why"} — enter your own house to heal and be safe. Must be near your house.
 - {"action":"exit_house","thought":"why"} — leave your house.
 

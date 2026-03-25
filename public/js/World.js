@@ -381,6 +381,7 @@ export class World {
     lines.push(`  Coins: ${agent.coins} | Bullets: ${agent.bullets} | HP Packs: ${agent.healthPacks}`);
     const extras = [];
     if (agent.wood > 0) extras.push(`Wood: ${agent.wood}`);
+    if (agent.stones > 0) extras.push(`Stones: ${agent.stones}`);
     if (agent.apples > 0) extras.push(`Apples: ${agent.apples}`);
     if (agent.keys > 0) extras.push(`Keys: ${agent.keys}`);
     if (agent.traps > 0) extras.push(`Traps: ${agent.traps}`);

@@ -53,6 +53,12 @@ export class Spider {
       this.mesh.material.opacity = 0.3;
       if (world) {
         this._dropLoot(world);
+        // Leave a corpse
+        world.addItem(new Item({
+          type: 'dead_spider',
+          x: this.x,
+          y: this.y,
+        }));
         // Broadcast spider kill
         const killerName = killer?.name || 'unknown';
         const killMsg = `${killerName} killed a spider! Loot dropped at (${Math.round(this.x)}, ${Math.round(this.y)}).`;
@@ -120,6 +126,20 @@ export class Spider {
       const moveSpeed = chaseTarget ? this.speed * 1.3 : this.speed;
       this.x += (dx / dist) * moveSpeed * dt;
       this.y += (dy / dist) * moveSpeed * dt;
+    }
+
+    // Push out of agents — don't overlap
+    for (const agent of world.agents) {
+      if (agent.dead || agent.insideHouse) continue;
+      const adx = this.x - agent.x;
+      const ady = this.y - agent.y;
+      const adist = Math.hypot(adx, ady);
+      const minDist = this.radius + agent.radius;
+      if (adist < minDist && adist > 0) {
+        const push = (minDist - adist);
+        this.x += (adx / adist) * push;
+        this.y += (ady / adist) * push;
+      }
     }
 
     // Clamp to world

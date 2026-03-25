@@ -1,6 +1,7 @@
 import { Item } from './Item.js';
 
 export const HOUSE_WOOD_COST = 5;
+export const HOUSE_STONE_COST = 3;
 export const HOUSE_HEAL_RATE = 3; // HP per second while inside
 
 export class House extends Item {

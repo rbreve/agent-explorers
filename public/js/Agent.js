@@ -2,11 +2,13 @@ import * as THREE from 'three';
 import { Bullet } from './Bullet.js';
 import { Item } from './Item.js';
 import { LLMController } from './LLMController.js';
-import { House, HOUSE_WOOD_COST } from './House.js';
+import { House, HOUSE_WOOD_COST, HOUSE_STONE_COST } from './House.js';
 
 export const BROADCAST_KILL = true;
 export const HEALTHPACK_HEAL = 45;
 export const APPLE_HEAL = 15;
+export const AXE_DAMAGE = 8;
+export const HAMMER_DAMAGE = 5;
 
 const CHARACTER_SPRITES = [
   '/images/characters/tile_0084.png',
@@ -38,6 +40,7 @@ export class Agent {
     this.hasAxe = false;
     this.hasHammer = false;
     this.wood = 0;
+    this.stones = 0;
     this.apples = 0;
     this.insideHouse = null; // reference to House if agent is inside
     this.stress = 0; // 0-10 stress level, set by LLM
@@ -243,7 +246,7 @@ export class Agent {
   }
 
   _updateStatsLabel() {
-    const text = `${this.coins}c ${this.healthPacks}hp ${this.bullets}b ${this.wood}w ${this.keys}k`;
+    const text = `${this.coins}c ${this.healthPacks}hp ${this.bullets}b ${this.wood}w ${this.stones}s ${this.keys}k`;
     if (text === this.lastStatsText) return;
     this.lastStatsText = text;
 
@@ -257,6 +260,7 @@ export class Agent {
       { text: `${this.healthPacks}hp`, color: '#44ff88' },
       { text: `${this.bullets}b`, color: '#ff6644' },
       { text: `${this.wood}w`, color: '#8B5E3C' },
+      { text: `${this.stones}s`, color: '#888888' },
     ];
     if (this.keys > 0) {
       parts.push({ text: `${this.keys}k`, color: '#ddaa00' });
@@ -790,6 +794,52 @@ export class Agent {
       this.attack(decision.targetX, decision.targetY, world);
     }
 
+    // Melee attack — hit nearby spider/agent with axe or hammer
+    if (decision.action === 'melee_attack' || decision.action === 'melee') {
+      const meleeRange = this.radius + 30;
+      const weapon = this.hasAxe ? 'axe' : this.hasHammer ? 'hammer' : null;
+      if (!weapon) {
+        this.incomingMessages.push({ from: 'SYSTEM', message: 'You need an axe or hammer to melee attack!' });
+      } else {
+        const dmg = weapon === 'axe' ? AXE_DAMAGE : HAMMER_DAMAGE;
+        let hit = false;
+
+        // Target spider
+        if (!decision.target || /spider/i.test(decision.target)) {
+          let closest = null;
+          let closestDist = Infinity;
+          for (const spider of world.spiders) {
+            if (spider.dead) continue;
+            const d = Math.hypot(spider.x - this.x, spider.y - this.y);
+            if (d < meleeRange && d < closestDist) { closestDist = d; closest = spider; }
+          }
+          if (closest) {
+            closest.takeDamage(dmg, this, world);
+            if (closest.dead) {
+              world.eventLog.push({ type: 'spider_kill', killer: this.name, color: this.color, x: Math.round(closest.x), y: Math.round(closest.y) });
+            }
+            this.incomingMessages.push({ from: 'SYSTEM', message: `You hit a spider with your ${weapon} for ${dmg} damage!` });
+            hit = true;
+          }
+        }
+
+        // Target agent
+        if (!hit && decision.target && !/spider/i.test(decision.target)) {
+          const targetAgent = world.agents.find(a => a.name === decision.target && !a.dead);
+          if (targetAgent && Math.hypot(targetAgent.x - this.x, targetAgent.y - this.y) < meleeRange) {
+            targetAgent.takeDamage(dmg, this, world);
+            this.incomingMessages.push({ from: 'SYSTEM', message: `You hit ${decision.target} with your ${weapon} for ${dmg} damage!` });
+            hit = true;
+          }
+        }
+
+        if (!hit) {
+          this.incomingMessages.push({ from: 'SYSTEM', message: 'Nothing close enough to hit.' });
+        }
+        this.attackCooldownTimer = this.attackCooldown;
+      }
+    }
+
     // Buy from shop — supports single item or array of items, or direct action name
     const shopActions = ['buy', 'firepower_up', 'reach_up', 'bullet_speed_up', 'speed_up', 'max_health_up'];
     if (decision.action === 'buy' || shopActions.includes(decision.action)) {
@@ -1000,6 +1050,7 @@ export class Agent {
         if (found) {
           // Break rock and drop loot immediately
           found.breakRock();
+          this.stones++;
           if (found.hasGold) {
             world.addItem(new Item({ type: 'coin', x: found.x, y: found.y }));
           }
@@ -1011,7 +1062,8 @@ export class Agent {
           this.targetX = null; this.targetY = null;
           this.vx = 0; this.vy = 0;
           new Audio('/sounds/hammer_rock.wav').play().catch(e => console.warn('[SOUND] hammer_rock blocked:', e.message));
-          this.incomingMessages.push({ from: 'SYSTEM', message: found.hasGold ? 'You broke a rock and found something!' : 'You broke a rock.' });
+          const rockMsg = found.hasGold ? 'You broke a rock and found gold + 1 stone!' : 'You broke a rock and got 1 stone.';
+          this.incomingMessages.push({ from: 'SYSTEM', message: rockMsg });
         } else {
           this.incomingMessages.push({ from: 'SYSTEM', message: 'There is no rock nearby to break.' });
         }
@@ -1033,12 +1085,16 @@ export class Agent {
       }
     }
 
-    // Build house — requires HOUSE_WOOD_COST wood
+    // Build house — requires wood + stones
     if (decision.action === 'build_house') {
-      if (this.wood < HOUSE_WOOD_COST) {
-        this.incomingMessages.push({ from: 'SYSTEM', message: `You need ${HOUSE_WOOD_COST} wood to build a house (you have ${this.wood}).` });
+      if (this.wood < HOUSE_WOOD_COST || this.stones < HOUSE_STONE_COST) {
+        const needs = [];
+        if (this.wood < HOUSE_WOOD_COST) needs.push(`${HOUSE_WOOD_COST} wood (have ${this.wood})`);
+        if (this.stones < HOUSE_STONE_COST) needs.push(`${HOUSE_STONE_COST} stones (have ${this.stones})`);
+        this.incomingMessages.push({ from: 'SYSTEM', message: `Need ${needs.join(' and ')} to build a house.` });
       } else {
         this.wood -= HOUSE_WOOD_COST;
+        this.stones -= HOUSE_STONE_COST;
         const house = new House({ x: this.x, y: this.y, owner: this });
         world.addItem(house);
         this._updateStatsLabel();
@@ -1145,6 +1201,7 @@ export class Agent {
       wood:        { prop: 'wood',         label: 'wood' },
       keys:        { prop: 'keys',         label: 'key' },
       traps:       { prop: 'traps',        label: 'trap' },
+      stones:      { prop: 'stones',       label: 'stone' },
       apples:      { prop: 'apples',       label: 'apple' },
     };
     const info = itemMap[itemType];
@@ -1163,7 +1220,7 @@ export class Agent {
   }
 
   _resourceProp(type) {
-    const map = { coins: 'coins', bullets: 'bullets', healthpacks: 'healthPacks', wood: 'wood', keys: 'keys', traps: 'traps', apples: 'apples' };
+    const map = { coins: 'coins', bullets: 'bullets', healthpacks: 'healthPacks', wood: 'wood', stones: 'stones', keys: 'keys', traps: 'traps', apples: 'apples' };
     return map[type] || null;
   }
 

@@ -40,6 +40,7 @@ export const ITEM_DEFS = {
   apple_tree:  { icon: '/images/appletree.png',     size: [50,50], z: 1.2, autoPickup: false, grabbable: false, radius: 18, interactive: true },
   shop:        { icon: '/images/store.png',         size: [60,60], z: 1,   autoPickup: false, grabbable: false, radius: 18, interactive: true },
   house:       { icon: '/images/house.png',         size: [50,50], z: 1,   autoPickup: false, grabbable: false, radius: 18, interactive: true },
+  dead_spider: { icon: '/images/deadspider.png',    size: [24,24], z: 0.8, autoPickup: false, grabbable: false, radius: 10, opacity: 0.7, label: 'DEAD SPIDER' },
 };
 
 export class Item {

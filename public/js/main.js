@@ -20,7 +20,10 @@ const agentLogsDiv = document.getElementById('agent-logs');
 
 // Load server config defaults
 fetch('/api/config').then(r => r.json()).then(cfg => {
-  document.getElementById('ollama-url').value = cfg.ollamaUrl || 'http://localhost:11434';
+  const ollamaUrlInput = document.getElementById('ollama-url');
+  if (ollamaUrlInput) {
+    ollamaUrlInput.value = cfg.ollamaUrl || 'http://localhost:11434';
+  }
   if (cfg.ollamaModel) document.getElementById('agent-ollama-model').value = cfg.ollamaModel;
 }).catch(() => {});
 
@@ -28,6 +31,12 @@ fetch('/api/config').then(r => r.json()).then(cfg => {
 const agentProvider = document.getElementById('agent-provider');
 const agentModelSelect = document.getElementById('agent-model');
 const agentOllamaModel = document.getElementById('agent-ollama-model');
+const AGENT_COLORS = ['#ff6b57', '#57b7ff', '#5bff8a', '#ffd166', '#d97bff', '#ffffff'];
+
+function getDefaultAgentColor(agentCount) {
+  return AGENT_COLORS[agentCount % AGENT_COLORS.length];
+}
+
 agentProvider.addEventListener('change', () => {
   const isOllama = agentProvider.value === 'ollama';
   agentModelSelect.style.display = isOllama ? 'none' : '';
@@ -41,13 +50,13 @@ btnAddAgent.addEventListener('click', () => {
   const model = provider === 'ollama'
     ? agentOllamaModel.value || 'llama3'
     : agentModelSelect.value;
-  const color = document.getElementById('agent-color').value;
+  const color = getDefaultAgentColor(world.agents.length);
   const prompt = document.getElementById('agent-prompt').value;
   const temperature = parseFloat(document.getElementById('agent-temperature').value) || 0.9;
-  const friendsRaw = document.getElementById('agent-friends').value;
-  const friends = friendsRaw ? friendsRaw.split(',').map(f => f.trim()).filter(Boolean) : [];
+  const friends = [];
+  const ollamaUrlInput = document.getElementById('ollama-url');
   const ollamaUrl = provider === 'ollama'
-    ? (document.getElementById('ollama-url').value || 'http://localhost:11434')
+    ? (ollamaUrlInput?.value || 'http://localhost:11434')
     : null;
 
   const enableInstincts = document.getElementById('agent-instincts').checked;
@@ -256,7 +265,7 @@ function updateInfoPanel() {
   agentInfoDiv.textContent =
     `Name: ${agent.name}  [${agent.dead ? 'DEAD' : 'alive'}]\n` +
     `Model: ${agent.model}\n` +
-    `Coins: ${agent.coins}  Health Potions: ${agent.healthPacks}  Bullets: ${agent.bullets}  Keys: ${agent.keys}  Traps: ${agent.traps}  Wood: ${agent.wood}  Apples: ${agent.apples}\n` +
+    `Coins: ${agent.coins}  Health Potions: ${agent.healthPacks}  Bullets: ${agent.bullets}  Keys: ${agent.keys}  Traps: ${agent.traps}  Wood: ${agent.wood}  Stones: ${agent.stones}  Apples: ${agent.apples}\n` +
     `Tools: ${[agent.hasAxe ? 'Axe' : '', agent.hasHammer ? 'Hammer' : ''].filter(Boolean).join(', ') || 'none'}\n` +
     `--- Stats ---\n` +
     `HEALTH (important):        ${agent.health}/${s.maxHealth.value} (lv${s.maxHealth.level})\n` +
@@ -300,9 +309,9 @@ function updateShopEditor() {
   // Shop name input
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
+  nameInput.className = 'shop-name-input';
   nameInput.value = shop.shopName || 'General Store';
   nameInput.placeholder = 'Shop name...';
-  nameInput.style.marginBottom = '6px';
   nameInput.addEventListener('input', () => {
     shop.shopName = nameInput.value;
     shop.updateLabel(nameInput.value);
@@ -311,9 +320,14 @@ function updateShopEditor() {
 
   for (const item of DEFAULT_INVENTORY) {
     const enabled = shop.shopInventory.some(si => si.name === item.name);
-    const label = document.createElement('label');
+    const row = document.createElement('div');
+    row.className = 'shop-item-row';
+
+    const checkboxId = `shop-item-${item.name}`;
     const cb = document.createElement('input');
     cb.type = 'checkbox';
+    cb.id = checkboxId;
+    cb.className = 'shop-item-toggle';
     cb.checked = enabled;
     cb.addEventListener('change', () => {
       if (cb.checked) {
@@ -324,106 +338,147 @@ function updateShopEditor() {
         shop.shopInventory = shop.shopInventory.filter(si => si.name !== item.name);
       }
     });
-    label.appendChild(cb);
-    label.append(` ${item.name.replace(/_/g, ' ')} `);
+
+    const details = document.createElement('label');
+    details.className = 'shop-item-details';
+    details.htmlFor = checkboxId;
+
+    const header = document.createElement('div');
+    header.className = 'shop-item-header';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'shop-item-name';
+    nameSpan.textContent = item.name.replace(/_/g, ' ');
+
     const priceSpan = document.createElement('span');
     priceSpan.className = 'shop-item-price';
-    priceSpan.textContent = `(${item.price} coins)`;
-    label.appendChild(priceSpan);
-    shopEditorDiv.appendChild(label);
+    priceSpan.textContent = `${item.price} coins`;
+
+    const description = document.createElement('span');
+    description.className = 'shop-item-description';
+    description.textContent = item.description;
+
+    header.appendChild(nameSpan);
+    header.appendChild(priceSpan);
+    details.appendChild(header);
+    details.appendChild(description);
+
+    row.appendChild(cb);
+    row.appendChild(details);
+    shopEditorDiv.appendChild(row);
   }
 }
 
-// Logging
-function addLog(name, message, color) {
+// Logging with categories
+let activeLogTab = 'all';
+
+// Tab switching
+document.querySelectorAll('.log-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.log-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    activeLogTab = tab.dataset.tab;
+    // Show/hide existing entries
+    for (const entry of agentLogsDiv.children) {
+      entry.style.display = (activeLogTab === 'all' || entry.dataset.cat === activeLogTab) ? '' : 'none';
+    }
+  });
+});
+
+function addLog(name, message, color, category = 'world') {
   const entry = document.createElement('div');
   entry.className = 'log-entry';
+  entry.dataset.cat = category;
   entry.innerHTML = `<span class="log-name" style="color:${color}">${name}</span>: ${message}`;
+  if (activeLogTab !== 'all' && category !== activeLogTab) {
+    entry.style.display = 'none';
+  }
   agentLogsDiv.prepend(entry);
-  // Keep max 50 entries
-  while (agentLogsDiv.children.length > 50) {
+  // Keep max 80 entries
+  while (agentLogsDiv.children.length > 80) {
     agentLogsDiv.removeChild(agentLogsDiv.lastChild);
   }
 }
 
-// Track agent decisions for logging (dedup by action+target+thought)
-let lastDecisionKeys = new Map();
+// Track agent decisions for logging — one log per decision object
+let lastLoggedDecisions = new Map();
 
 function checkAgentThoughts() {
   for (const agent of world.agents) {
     if (agent.lastDecision?.thought) {
       const d = agent.lastDecision;
-      const key = `${d.action}|${d.target || d.to || ''}|${d.message || ''}|${d.items || d.item || ''}`;
-      const prev = lastDecisionKeys.get(agent.name);
-      if (prev !== key) {
-        lastDecisionKeys.set(agent.name, key);
+      if (lastLoggedDecisions.get(agent.name) === d) continue; // already logged this exact decision
+      lastLoggedDecisions.set(agent.name, d);
         switch (d.action) {
           case 'send_message':
           case 'talk':
-            addLog(agent.name, `-> ${d.to}: "${d.message}"`, agent.color);
+            addLog(agent.name, `-> ${d.to}: "${d.message}"`, agent.color, 'chat');
             break;
           case 'attack':
-            addLog(agent.name, `[ATTACK] fired at ${d.target || `(${d.targetX},${d.targetY})`}`, '#ff4444');
+            addLog(agent.name, `[ATTACK] fired at ${d.target || `(${d.targetX},${d.targetY})`}`, '#ff4444', 'chat');
+            break;
+          case 'melee_attack':
+          case 'melee':
+            addLog(agent.name, `[MELEE] hit ${d.target || 'something'} with ${agent.hasAxe ? 'axe' : 'hammer'}`, '#ff8844', 'chat');
             break;
           case 'buy': {
             const bought = d.items ? d.items.join(', ') : d.item;
-            addLog(agent.name, `[BUY] ${bought} from shop`, '#aa8855');
+            addLog(agent.name, `[BUY] ${bought} from shop`, '#aa8855', 'shop');
             break;
           }
           case 'give':
           case 'give_coins':
           case 'give_bullets':
           case 'give_healthpack':
-            addLog(agent.name, `[GIVE] ${d.amount} ${d.item || d.action.replace('give_', '')} -> ${d.to}`, '#ffdd44');
+            addLog(agent.name, `[GIVE] ${d.amount} ${d.item || d.action.replace('give_', '')} -> ${d.to}`, '#ffdd44', 'chat');
             break;
           case 'sell_bullets':
-            addLog(agent.name, `[SELL] ${d.amount} bullet(s) for coins`, '#ff6644');
+            addLog(agent.name, `[SELL] ${d.amount} bullet(s) for coins`, '#ff6644', 'shop');
             break;
           case 'sell_wood':
-            addLog(agent.name, `[SELL] ${d.amount} wood for coins`, '#2d8a4e');
+            addLog(agent.name, `[SELL] ${d.amount} wood for coins`, '#2d8a4e', 'shop');
             break;
           case 'trade':
-            addLog(agent.name, `[TRADE] ${d.offer?.amount} ${d.offer?.type} <-> ${d.request?.amount} ${d.request?.type} with ${d.to}`, '#dd88ff');
+            addLog(agent.name, `[TRADE] ${d.offer?.amount} ${d.offer?.type} <-> ${d.request?.amount} ${d.request?.type} with ${d.to}`, '#dd88ff', 'chat');
             break;
           case 'use_healthpack':
-            addLog(agent.name, `[HEAL] used a health pack`, '#44ff88');
+            addLog(agent.name, `[HEAL] used a health pack`, '#44ff88', 'world');
             break;
           case 'place_trap':
-            addLog(agent.name, `[TRAP] placed a hidden trap!`, '#cc4400');
+            addLog(agent.name, `[TRAP] placed a hidden trap!`, '#cc4400', 'world');
             break;
           case 'open_treasure':
-            addLog(agent.name, `[TREASURE] trying to open a treasure chest`, '#ddaa00');
+            addLog(agent.name, `[TREASURE] trying to open a treasure chest`, '#ddaa00', 'world');
             break;
           case 'cut_tree':
-            addLog(agent.name, `[TREE] cutting down a tree`, '#2d8a4e');
+            addLog(agent.name, `[TREE] cutting down a tree`, '#2d8a4e', 'world');
             break;
           case 'break_rock':
-            addLog(agent.name, `[ROCK] breaking a rock`, '#888888');
+            addLog(agent.name, `[ROCK] breaking a rock`, '#888888', 'world');
             break;
           case 'get_apple':
-            addLog(agent.name, `[APPLE] picked an apple`, '#ff4444');
+            addLog(agent.name, `[APPLE] picked an apple`, '#ff4444', 'world');
             break;
           case 'eat_apple':
-            addLog(agent.name, `[APPLE] ate an apple`, '#44ff88');
+            addLog(agent.name, `[APPLE] ate an apple`, '#44ff88', 'world');
             break;
           case 'grab':
           case 'get':
           case 'take':
-            addLog(agent.name, `[GRAB] picked up ${d.item || 'an item'}`, '#ddaa00');
+            addLog(agent.name, `[GRAB] picked up ${d.item || 'an item'}`, '#ddaa00', 'world');
             break;
           case 'build_house':
-            addLog(agent.name, `[HOUSE] built a house!`, '#8B5E3C');
+            addLog(agent.name, `[HOUSE] built a house!`, '#8B5E3C', 'world');
             break;
           case 'enter_house':
-            addLog(agent.name, `[HOUSE] entered their house`, '#8B5E3C');
+            addLog(agent.name, `[HOUSE] entered their house`, '#8B5E3C', 'world');
             break;
           case 'exit_house':
-            addLog(agent.name, `[HOUSE] left their house`, '#8B5E3C');
+            addLog(agent.name, `[HOUSE] left their house`, '#8B5E3C', 'world');
             break;
           default:
             break;
         }
-      }
     }
   }
 }

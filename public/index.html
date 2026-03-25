@@ -10,61 +10,64 @@
   <div id="app">
     <canvas id="game-canvas"></canvas>
     <div id="ui-panel">
-      <h2>Agent Fighters</h2>
-      <div class="section">
-        <label>OpenRouter API Key</label>
-        <input type="password" id="api-key" placeholder="sk-or-..." />
+      <div class="panel-header">
+        <p class="panel-eyebrow">Arena Control</p>
+        <h2>Agent Fighters</h2>
+        <p class="panel-subtitle">Spawn agents, tune their behavior, and shape the world from one clean control panel.</p>
       </div>
-      <div class="section">
-        <h3>Ollama Server</h3>
-        <input type="text" id="ollama-url" placeholder="http://localhost:11434" value="http://localhost:11434" />
+
+      <div class="section section-card section-card-primary">
+        <div class="section-heading">
+          <h3>Create Agent</h3>
+          <span class="section-badge">AI</span>
+        </div>
+        <div class="field-group">
+          <label for="agent-name">Agent Name</label>
+          <input type="text" id="agent-name" placeholder="Agent name" />
+        </div>
+        <div class="field-group">
+          <label for="agent-provider">Provider</label>
+          <select id="agent-provider">
+            <option value="openrouter">OpenRouter</option>
+            <option value="ollama">Ollama</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label for="agent-model">Hosted Model</label>
+          <select id="agent-model">
+            <option value="openai/gpt-oss-120b">openai/gpt-oss-120b</option>
+            <option value="google/gemini-2.5-flash-lite">google/gemini-2.5-flash-lite</option>
+            <option value="google/gemini-3.1-flash-lite-preview">google/gemini-3.1-flash-lite-preview</option>
+            <option value="minimax/minimax-m2.7">minimax/minimax-m2.7</option>
+            <option value="deepseek/deepseek-v3.2">deepseek/deepseek-v3.2</option>
+            <option value="x-ai/grok-4.1-fast">x-ai/grok-4.1-fast</option>
+            <option value="anthropic/claude-haiku-4.5">anthropic/claude-haiku-4.5</option>
+            <option value="openai/gpt-4o-mini">openai/gpt-4o-mini</option>
+            <option value="openai/gpt-5-mini">openai/gpt-5-mini</option>
+            <option value="minimax/minimax-m2.5">minimax/minimax-m2.5</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label for="agent-ollama-model">Ollama Model</label>
+          <input type="text" id="agent-ollama-model" placeholder="Ollama model (e.g. llama3)" style="display:none" />
+        </div>
+        <div class="field-group">
+          <label for="agent-temperature">Temperature</label>
+          <input type="number" id="agent-temperature" value="0.9" min="0" max="2" step="0.1" />
+        </div>
+        <div class="field-group">
+          <label for="agent-prompt">Behavior Prompt</label>
+          <textarea id="agent-prompt" placeholder="Agent personality/goal..." rows="4">You are a hunter exploring the arena. Collect coins, hunt spiders, and survive.</textarea>
+        </div>
+        <label class="checkbox-row"><input type="checkbox" id="agent-instincts" /> Enable instincts</label>
+        <button id="btn-add-agent" class="button-primary"><img class="btn-icon" src="/images/characters/tile_0084.png" alt="">Deploy Agent</button>
       </div>
-      <div class="section">
-        <h3>Add Agent</h3>
-        <input type="text" id="agent-name" placeholder="Agent name" />
-        <select id="agent-provider">
-          <option value="openrouter">OpenRouter</option>
-          <option value="ollama">Ollama</option>
-        </select>
-        <select id="agent-model">
-          <option value="minimax/minimax-m2.5">minimax/minimax-m2.5</option>
-          <option value="openai/gpt-oss-120b">openai/gpt-oss-120b</option>
-          <option value="xiaomi/mimo-v2-flash">xiaomi/mimo-v2-flash</option>
-          <option value="google/gemini-2.5-flash-lite">google/gemini-2.5-flash-lite</option>
-          <option value="google/gemini-3.1-flash-lite-preview">google/gemini-3.1-flash-lite-preview</option>
-          <option value="minimax/minimax-m2.7">minimax/minimax-m2.7</option>
-          <option value="stepfun/step-3.5-flash:free">stepfun/step-3.5-flash:free</option>
-          <option value="deepseek/deepseek-v3.2">deepseek/deepseek-v3.2</option>
-          <option value="nvidia/nemotron-3-super-120b-a12b:free">nvidia/nemotron-3-super-120b-a12b:free</option>
-          <option value="x-ai/grok-4.1-fast">x-ai/grok-4.1-fast</option>
-          <option value="anthropic/claude-haiku-4.5">anthropic/claude-haiku-4.5</option>
-          <option value="openai/gpt-4o-mini">openai/gpt-4o-mini</option>
-          <option value="openai/gpt-5-mini">openai/gpt-5-mini</option>
-          <option value="minimax/minimax-m2.5">minimax/minimax-m2.5</option>
-          <option value="z-ai/glm-4.7-flash">z-ai/glm-4.7-flash</option>
-          <option value="z-ai/glm-4.5-air">z-ai/glm-4.5-air</option>
-          <option value="qwen/qwen3-embedding-8b">qwen/qwen3-embedding-8b</option>
-        </select>
-        <input type="text" id="agent-ollama-model" placeholder="Ollama model (e.g. llama3)" style="display:none" />
-        <label>Temperature: <input type="number" id="agent-temperature" value="0.9" min="0" max="2" step="0.1" style="width:60px" /></label>
-        <select id="agent-color">
-          <option value="#ff4444">Red</option>
-          <option value="#44aaff">Blue</option>
-          <option value="#44ff44">Green</option>
-          <option value="#ffaa00">Orange</option>
-          <option value="#ff44ff">Pink</option>
-          <option value="#ffffff">White</option>
-        </select>
-        <input type="text" id="agent-friends" placeholder="Friends (comma-separated names)" />
-        <textarea id="agent-prompt" placeholder="Agent personality/goal..." rows="3">You are a hunter exploring the arena. Collect coins, hunt spiders, and survive.</textarea>
-        <label><input type="checkbox" id="agent-instincts" /> Enable Instincts</label>
-        <button id="btn-add-agent"><img class="btn-icon" src="/images/characters/tile_0084.png" alt="">Add Agent</button>
-      </div>
-      <div class="section">
+
+      <div class="section section-card">
         <h3>Add Shop</h3>
         <button id="btn-add-shop"><img class="btn-icon" src="/images/store.png" alt="">Add Shop</button>
       </div>
-      <div class="section">
+      <div class="section section-card">
         <h3>Spawn Items</h3>
         <button id="btn-add-coins"><img class="btn-icon" src="/images/coin.png" alt="">Spawn 5 Coins</button>
         <button id="btn-add-health"><img class="btn-icon" src="/images/health.png" alt="">Spawn Health Pack</button>
@@ -77,27 +80,35 @@
         <input type="text" id="note-text" placeholder="Note tip text..." />
         <button id="btn-add-note"><img class="btn-icon" src="/images/sign.png" alt="">Spawn Note</button>
       </div>
-      <div class="section">
+      <div class="section section-card">
         <h3>World</h3>
-        <label><input type="checkbox" id="toggle-awareness" checked /> Show Awareness</label>
-        <label><input type="checkbox" id="toggle-thoughts" checked /> Show Thoughts</label>
-        <label><input type="checkbox" id="toggle-logs" checked /> Show Agent Logs</label>
-        <label><input type="checkbox" id="toggle-perception-log" /> Log Perception (server)</label>
+        <label class="checkbox-row"><input type="checkbox" id="toggle-awareness" checked /> Show Awareness</label>
+        <label class="checkbox-row"><input type="checkbox" id="toggle-thoughts" checked /> Show Thoughts</label>
+        <label class="checkbox-row"><input type="checkbox" id="toggle-logs" checked /> Show Agent Logs</label>
+        <label class="checkbox-row"><input type="checkbox" id="toggle-perception-log" /> Log Perception (server)</label>
         <button id="btn-pause">Pause / Resume</button>
       </div>
-      <div class="section" id="shop-editor-section" style="display:none">
+      <div class="section section-card" id="shop-editor-section" style="display:none">
         <h3><img class="btn-icon" src="/images/store.png" alt="">Shop Inventory</h3>
         <div id="shop-editor"></div>
       </div>
-      <div class="section">
+      <div class="section section-card">
         <h3>Agent Info</h3>
         <div id="agent-info">Click an agent to see info</div>
       </div>
-      <div class="section">
+      <div class="section section-card">
         <h3>Agent Logs</h3>
+        <div class="log-tabs">
+          <button class="log-tab active" data-tab="all">All</button>
+          <button class="log-tab" data-tab="chat">Chat</button>
+          <button class="log-tab" data-tab="shop">Shop</button>
+          <button class="log-tab" data-tab="world">World</button>
+        </div>
         <div id="agent-logs"></div>
       </div>
     </div>
+    <input type="hidden" id="api-key" value="" />
+    <input type="hidden" id="ollama-url" value="http://localhost:11434" />
   </div>
   <script type="importmap">
   {
