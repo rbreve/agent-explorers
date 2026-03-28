@@ -1,30 +1,12 @@
-import * as THREE from 'three';
 import { Bullet } from './Bullet.js';
 import { Item } from './Item.js';
 import { LLMController } from './LLMController.js';
-import { House, HOUSE_WOOD_COST, HOUSE_STONE_COST } from './House.js';
 import { Grid, GRID_COLS, GRID_ROWS, TILE_SIZE } from './Grid.js';
+import { AgentRenderer } from './AgentRenderer.js';
+import { executeDecision } from './ActionRegistry.js';
 
 export const BROADCAST_KILL = true;
-export const HEALTHPACK_HEAL = 45;
-export const APPLE_HEAL = 15;
-export const AXE_DAMAGE = 8;
-export const HAMMER_DAMAGE = 5;
 
-const CHARACTER_SPRITES = [
-  '/images/characters/tile_0084.png',
-  '/images/characters/tile_0085.png',
-  '/images/characters/tile_0086.png',
-  '/images/characters/tile_0087.png',
-  '/images/characters/tile_0088.png',
-  '/images/characters/tile_0096.png',
-  '/images/characters/tile_0097.png',
-  '/images/characters/tile_0098.png',
-  '/images/characters/tile_0099.png',
-  '/images/characters/tile_0100.png',
-];
-let spriteIndex = 0;
-const textureLoader = new THREE.TextureLoader();
 
 export class Agent {
   constructor(config) {
@@ -38,6 +20,7 @@ export class Agent {
     this.bullets = config.bullets ?? 0;
     this.keys = config.keys ?? 0;
     this.traps = config.traps ?? 0;
+    this.animalTraps = config.animalTraps ?? 0;
     this.hasAxe = false;
     this.hasHammer = false;
     this.wood = 0;
@@ -47,6 +30,7 @@ export class Agent {
     this.stress = 0; // 0-10 stress level, set by LLM
     this.inventory = config.inventory ?? [];
     this.agentType = config.agentType || 'warrior';
+    this.isNPC = config.isNPC || false;
 
     // Core stats (trackable, upgradeable)
     this.stats = {
@@ -60,7 +44,8 @@ export class Agent {
     this.health = config.health ?? this.stats.maxHealth.value;
     this.maxHealth = this.stats.maxHealth.value;
     this.speed = this.stats.speed.value;
-    this.awarenessRadius = this.stats.reach.value;
+    this.awarenessRadius = this.stats.reach.value; // pixels (used by renderer)
+    this.awarenessRange = this.stats.reach.value / TILE_SIZE; // tiles
     this.attackDamage = this.stats.firepower.value;
     this.bulletSpeed = this.stats.bulletSpeed.value;
     this.attackCooldown = config.attackCooldown ?? 1.0;
@@ -81,6 +66,8 @@ export class Agent {
     this.llm = new LLMController(this.model, this.temperature, this.provider, this.ollamaUrl);
     this.lastDecision = null;
     this.lastActionResult = null; // { success: bool, message: string }
+    this.turnHistory = []; // sliding window of recent { perception, decision } pairs
+    this.maxTurnHistory = 5;
     this.pendingDecision = false;
     this.needsReassess = false;
     this.decisionCooldown = 0;       // seconds remaining before next LLM call
@@ -95,12 +82,6 @@ export class Agent {
     this.workDuration = 3.5;     // seconds to complete
 
     // Chat & relationships
-    this.speechBubble = null;
-    this.speechTimer = 0;
-    this.speechDuration = 5.0;
-    this.thoughtBubble = null;
-    this.thoughtTimer = 0;
-    this.thoughtDuration = 5.0;
     this.currentSpeech = '';
     this.incomingMessages = []; // new messages since last decision
     this.conversationHistory = {}; // per-agent: { agentName: [{from, message, tick}] }
@@ -112,10 +93,15 @@ export class Agent {
     }
     this.goal = '';
 
-    // Memory
-    this.knownShops = []; // [{x, y}] — remembered shop locations
-    this.knownTreasures = []; // [{x, y}] — remembered treasure locations
-    this.memory = []; // notable events the agent remembers
+    // Short-term memory (recent events, max 15)
+    this.memory = [];
+
+    // Long-term memory — LLM decides what to store here
+    this.longTermMemory = [];  // [string] — max 30 entries
+
+    // Legacy aliases
+    this.knownShops = [];
+    this.knownTreasures = [];
 
     // Exploration — track visited quadrants (4x3 grid over 1200x800)
     this.visitedQuadrants = new Set();
@@ -130,202 +116,25 @@ export class Agent {
     this.deadTimer = 0;
     this.lastAttacker = null;
 
-    // Three.js objects
-    this.mesh = null;
-    this.awarenessRing = null;
-    this.healthBar = null;
-    this.healthBarBg = null;
-    this.nameLabel = null;
-    this.statsLabel = null;
-    this.statsCanvas = null;
-    this.statsCtx = null;
-    this.lastStatsText = '';
-    this.group = new THREE.Group();
-
-    this._buildMesh();
+    // Renderer — all Three.js visuals
+    this.renderer = new AgentRenderer(this);
+    this.group = this.renderer.group;
   }
 
-  _buildMesh() {
-    // Agent sprite from pixel art
-    const spritePath = CHARACTER_SPRITES[spriteIndex % CHARACTER_SPRITES.length];
-    spriteIndex++;
-    const texture = textureLoader.load(spritePath);
-    texture.magFilter = THREE.NearestFilter;
-    texture.minFilter = THREE.NearestFilter;
-    const spriteMat = new THREE.SpriteMaterial({ map: texture, transparent: true });
-    this.mesh = new THREE.Sprite(spriteMat);
-    const spriteSize = this.radius * 2.5;
-    this.mesh.scale.set(spriteSize, spriteSize, 1);
-    this.mesh.position.z = 2;
-    this.group.add(this.mesh);
-
-    // Direction indicator (small dot)
-    const dirGeo = new THREE.CircleGeometry(3, 16);
-    const dirMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    this.dirIndicator = new THREE.Mesh(dirGeo, dirMat);
-    this.dirIndicator.position.set(this.radius * 0.7, 0, 2.2);
-    this.group.add(this.dirIndicator);
-
-    // Awareness ring
-    const ringGeo = new THREE.RingGeometry(this.awarenessRadius - 1, this.awarenessRadius, 64);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(this.color),
-      transparent: true,
-      opacity: 0.15,
-    });
-    this.awarenessRing = new THREE.Mesh(ringGeo, ringMat);
-    this.awarenessRing.position.z = 0.5;
-    this.group.add(this.awarenessRing);
-
-    // Health bar background
-    const hbBgGeo = new THREE.PlaneGeometry(this.radius * 2.5, 4);
-    const hbBgMat = new THREE.MeshBasicMaterial({ color: 0x333333 });
-    this.healthBarBg = new THREE.Mesh(hbBgGeo, hbBgMat);
-    this.healthBarBg.position.set(0, -this.radius - 10, 3);
-    this.group.add(this.healthBarBg);
-
-    // Health bar
-    const hbGeo = new THREE.PlaneGeometry(this.radius * 2.5, 4);
-    const hbMat = new THREE.MeshBasicMaterial({ color: 0x44ff44 });
-    this.healthBar = new THREE.Mesh(hbGeo, hbMat);
-    this.healthBar.position.set(0, -this.radius - 10, 3.1);
-    this.group.add(this.healthBar);
-
-    // Name label using canvas texture
-    this._createNameLabel();
-
-    // Speech bubble (persistent, show/hide)
-    this._createBubbleSprite();
-
-    // Thought bubble (persistent, show/hide)
-    this._createThoughtSprite();
-
-    // Stats label (coins + healthpacks) below health bar
-    this._createStatsLabel();
-
-    // Tool icons (axe, hammer) — hidden by default
-    this._createToolIcons();
-
-    this.group.position.set(this.x, this.y, 0);
-  }
-
-  _createNameLabel() {
-    const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 40;
-    const ctx = canvas.getContext('2d');
-    ctx.font = 'bold 30px Courier New';
-    ctx.textAlign = 'center';
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(this.name, 128, 28);
-
-    const texture = new THREE.CanvasTexture(canvas);
-    const mat = new THREE.SpriteMaterial({ map: texture, transparent: true });
-    this.nameLabel = new THREE.Sprite(mat);
-    this.nameLabel.scale.set(80, 12, 1);
-    this.nameLabel.position.set(0, this.radius + 14, 3);
-    this.group.add(this.nameLabel);
-  }
-
-  _createStatsLabel() {
-    const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 64;
-    this.statsCanvas = canvas;
-    this.statsCtx = canvas.getContext('2d');
-
-    const texture = new THREE.CanvasTexture(canvas);
-    const mat = new THREE.SpriteMaterial({ map: texture, transparent: true });
-    this.statsLabel = new THREE.Sprite(mat);
-    this.statsLabel.scale.set(120, 15, 1);
-    this.statsLabel.position.set(0, -this.radius - 22, 3);
-    this.group.add(this.statsLabel);
-    this._updateStatsLabel();
-  }
-
-  _updateStatsLabel() {
-    const text = `${this.coins}c ${this.healthPacks}hp ${this.bullets}b ${this.wood}w ${this.stones}s ${this.keys}k`;
-    if (text === this.lastStatsText) return;
-    this.lastStatsText = text;
-
-    const ctx = this.statsCtx;
-    ctx.clearRect(0, 0, 512, 64);
-    ctx.font = 'bold 42px Courier New';
-    ctx.textAlign = 'left';
-    const gap = 12;
-    const parts = [
-      { text: `${this.coins}c`, color: '#ffdd44' },
-      { text: `${this.healthPacks}hp`, color: '#44ff88' },
-      { text: `${this.bullets}b`, color: '#ff6644' },
-      { text: `${this.wood}w`, color: '#8B5E3C' },
-      { text: `${this.stones}s`, color: '#888888' },
-    ];
-    if (this.keys > 0) {
-      parts.push({ text: `${this.keys}k`, color: '#ddaa00' });
-    }
-    const widths = parts.map(p => ctx.measureText(p.text).width);
-    const totalWidth = widths.reduce((a, b) => a + b, 0) + gap * (parts.length - 1);
-    const startX = (512 - totalWidth) / 2;
-    const padding = 8;
-
-    // Dark background
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.beginPath();
-    ctx.roundRect(startX - padding, 4, totalWidth + padding * 2, 52, 8);
-    ctx.fill();
-
-    let x = startX;
-    for (let i = 0; i < parts.length; i++) {
-      ctx.fillStyle = parts[i].color;
-      ctx.fillText(parts[i].text, x, 44);
-      x += widths[i] + gap;
-    }
-
-    this.statsLabel.material.map.needsUpdate = true;
-  }
-
-  _createToolIcons() {
-    const axeTex = textureLoader.load('/images/axe.png');
-    axeTex.magFilter = THREE.NearestFilter;
-    axeTex.minFilter = THREE.NearestFilter;
-    const axeMat = new THREE.SpriteMaterial({ map: axeTex, transparent: true });
-    this.axeIcon = new THREE.Sprite(axeMat);
-    this.axeIcon.scale.set(16, 16, 1);
-    this.axeIcon.position.set(this.radius + 8, 0, 2.5);
-    this.axeIcon.visible = false;
-    this.group.add(this.axeIcon);
-
-    const hammerTex = textureLoader.load('/images/hammer.png');
-    hammerTex.magFilter = THREE.NearestFilter;
-    hammerTex.minFilter = THREE.NearestFilter;
-    const hammerMat = new THREE.SpriteMaterial({ map: hammerTex, transparent: true });
-    this.hammerIcon = new THREE.Sprite(hammerMat);
-    this.hammerIcon.scale.set(16, 16, 1);
-    this.hammerIcon.position.set(this.radius + 8, -18, 2.5);
-    this.hammerIcon.visible = false;
-    this.group.add(this.hammerIcon);
-  }
-
-  _updateToolIcons() {
-    this.axeIcon.visible = this.hasAxe;
-    this.hammerIcon.visible = this.hasHammer;
-    // Stack hammer below axe only if axe is visible
-    this.hammerIcon.position.y = this.hasAxe ? -18 : 0;
-  }
 
   // System-routed message: agent tells the system "send this to X", system delivers it
   sendMessage(to, message, world) {
     if (!world || !to || !message) return;
 
-    // Always show speech bubble on sender (even if target is out of range)
-    this._showBubble(message, to);
+    // Show speech bubble via renderer
+    this.renderer.showSpeech(message, to);
 
     const target = world.agents.find(a => a.name === to && !a.dead);
     if (!target) return;
 
     // Allow messaging up to 1.5x awareness range (agents remember seeing someone)
     const dist = this.distanceTo(target);
-    if (dist > this.awarenessRadius * 4) return;
+    if (dist > this.awarenessRange * 4) return;
 
     // System delivers the message to the target agent
     target.incomingMessages.push({ from: this.name, message });
@@ -345,242 +154,18 @@ export class Agent {
     }
   }
 
-  _createBubbleSprite() {
-    // Persistent sprite — texture swapped on each message
-    const mat = new THREE.SpriteMaterial({ transparent: true, opacity: 0 });
-    this.speechBubble = new THREE.Sprite(mat);
-    this.speechBubble.visible = false;
-    this.speechBubble.position.z = 4;
-    this.group.add(this.speechBubble);
-  }
-
-  _createThoughtSprite() {
-    const mat = new THREE.SpriteMaterial({ transparent: true, opacity: 0 });
-    this.thoughtBubble = new THREE.Sprite(mat);
-    this.thoughtBubble.visible = false;
-    this.thoughtBubble.position.z = 3.8;
-    this.group.add(this.thoughtBubble);
-  }
-
-  _showThought(text) {
-    if (!text) return;
-    this.thoughtTimer = this.thoughtDuration;
-
-    const fontSize = 18;
-    const font = `italic ${fontSize}px Courier New`;
-    const padding = 12;
-    const maxWidth = 320;
-
-    const measureCanvas = document.createElement('canvas');
-    const mctx = measureCanvas.getContext('2d');
-    mctx.font = font;
-
-    // Word-wrap
-    const maxTextWidth = maxWidth - padding * 2;
-    const words = text.split(' ');
-    const lines = [];
-    let currentLine = '';
-    for (const word of words) {
-      const testLine = currentLine ? currentLine + ' ' + word : word;
-      if (mctx.measureText(testLine).width > maxTextWidth && currentLine) {
-        lines.push(currentLine);
-        currentLine = word;
-      } else {
-        currentLine = testLine;
-      }
-    }
-    if (currentLine) lines.push(currentLine);
-
-    let widestLine = 0;
-    for (const line of lines) {
-      widestLine = Math.max(widestLine, mctx.measureText(line).width);
-    }
-
-    const lineHeight = fontSize + 4;
-    const bubbleW = Math.max(60, Math.ceil(widestLine) + padding * 2);
-    const bubbleH = lines.length * lineHeight + padding * 2;
-
-    const canvas = document.createElement('canvas');
-    canvas.width = bubbleW + 4;
-    canvas.height = bubbleH + 4;
-    const ctx = canvas.getContext('2d');
-
-    // Thought bubble — rounded rect with dotted feel
-    const r = 8;
-    const bx = 2, by = 2, w = bubbleW, h = bubbleH;
-    ctx.beginPath();
-    ctx.moveTo(bx + r, by);
-    ctx.lineTo(bx + w - r, by);
-    ctx.quadraticCurveTo(bx + w, by, bx + w, by + r);
-    ctx.lineTo(bx + w, by + h - r);
-    ctx.quadraticCurveTo(bx + w, by + h, bx + w - r, by + h);
-    ctx.lineTo(bx + r, by + h);
-    ctx.quadraticCurveTo(bx, by + h, bx, by + h - r);
-    ctx.lineTo(bx, by + r);
-    ctx.quadraticCurveTo(bx, by, bx + r, by);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(40, 40, 20, 0.85)';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(180, 180, 80, 0.5)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 3]);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    ctx.font = font;
-    ctx.fillStyle = '#dddd88';
-    ctx.textAlign = 'center';
-    for (let i = 0; i < lines.length; i++) {
-      ctx.fillText(lines[i], canvas.width / 2, padding + fontSize + i * lineHeight);
-    }
-
-    const oldTex = this.thoughtBubble.material.map;
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.minFilter = THREE.LinearFilter;
-    this.thoughtBubble.material.map = texture;
-    this.thoughtBubble.material.needsUpdate = true;
-    if (oldTex) {
-      requestAnimationFrame(() => oldTex.dispose());
-    }
-
-    const scale = 0.45;
-    const scaleX = canvas.width * scale;
-    const scaleY = canvas.height * scale;
-    this.thoughtBubble.scale.set(scaleX, scaleY, 1);
-    this.thoughtBubble.position.set(0, -this.radius - 35 - scaleY / 2, 3.8);
-    this.thoughtBubble.material.opacity = 1;
-    this.thoughtBubble.visible = true;
-  }
-
-  _showBubble(text, targetName) {
-    this.currentSpeech = text;
-    this.speechTimer = this.speechDuration;
-
-    const fontSize = 16;
-    const font = `${fontSize}px Courier New`;
-    const headerFont = `italic 13px Courier New`;
-    const lineHeight = fontSize + 6;
-    const padding = 14;
-    const tailHeight = 12;
-    const maxBubbleWidth = 320;
-    const header = targetName ? `\u2192 ${targetName}` : null;
-
-    // Measure text with a temp context
-    const measureCanvas = document.createElement('canvas');
-    const mctx = measureCanvas.getContext('2d');
-    mctx.font = font;
-
-    // Word-wrap
-    const maxTextWidth = maxBubbleWidth - padding * 2;
-    const words = text.split(' ');
-    const lines = [];
-    let currentLine = '';
-    for (const word of words) {
-      const testLine = currentLine ? currentLine + ' ' + word : word;
-      if (mctx.measureText(testLine).width > maxTextWidth && currentLine) {
-        lines.push(currentLine);
-        currentLine = word;
-      } else {
-        currentLine = testLine;
-      }
-    }
-    if (currentLine) lines.push(currentLine);
-
-    let widestLine = 0;
-    for (const line of lines) {
-      widestLine = Math.max(widestLine, mctx.measureText(line).width);
-    }
-    if (header) {
-      mctx.font = headerFont;
-      widestLine = Math.max(widestLine, mctx.measureText(header).width);
-    }
-
-    const headerHeight = header ? 20 : 0;
-    const bubbleW = Math.max(80, Math.ceil(widestLine) + padding * 2);
-    const bubbleH = lines.length * lineHeight + padding * 2 + headerHeight;
-
-    // Draw on a fresh canvas
-    const canvas = document.createElement('canvas');
-    canvas.width = bubbleW + 4;
-    canvas.height = bubbleH + tailHeight + 4;
-    const ctx = canvas.getContext('2d');
-
-    const r = 10;
-    const bx = 2, by = 2, w = bubbleW, h = bubbleH;
-    ctx.beginPath();
-    ctx.moveTo(bx + r, by);
-    ctx.lineTo(bx + w - r, by);
-    ctx.quadraticCurveTo(bx + w, by, bx + w, by + r);
-    ctx.lineTo(bx + w, by + h - r);
-    ctx.quadraticCurveTo(bx + w, by + h, bx + w - r, by + h);
-    ctx.lineTo(bx + w * 0.55, by + h);
-    ctx.lineTo(bx + w * 0.5, by + h + tailHeight);
-    ctx.lineTo(bx + w * 0.42, by + h);
-    ctx.lineTo(bx + r, by + h);
-    ctx.quadraticCurveTo(bx, by + h, bx, by + h - r);
-    ctx.lineTo(bx, by + r);
-    ctx.quadraticCurveTo(bx, by, bx + r, by);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(15, 15, 25, 0.92)';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(100, 100, 140, 0.5)';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    let textY = padding + fontSize;
-    if (header) {
-      ctx.font = headerFont;
-      ctx.fillStyle = '#8888cc';
-      ctx.textAlign = 'center';
-      ctx.fillText(header, canvas.width / 2, textY);
-      textY += headerHeight;
-    }
-    ctx.font = font;
-    ctx.fillStyle = '#eeeeee';
-    ctx.textAlign = 'center';
-    for (let i = 0; i < lines.length; i++) {
-      ctx.fillText(lines[i], canvas.width / 2, textY + i * lineHeight);
-    }
-
-    // Swap texture — defer dispose to avoid GPU race condition
-    const oldTex = this.speechBubble.material.map;
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.minFilter = THREE.LinearFilter;
-    this.speechBubble.material.map = texture;
-    this.speechBubble.material.needsUpdate = true;
-    if (oldTex) {
-      requestAnimationFrame(() => oldTex.dispose());
-    }
-
-    const scale = 0.5;
-    const scaleX = canvas.width * scale;
-    const scaleY = canvas.height * scale;
-    this.speechBubble.scale.set(scaleX, scaleY, 1);
-    this.speechBubble.position.set(0, this.radius + 28 + scaleY / 2, 4);
-    this.speechBubble.material.opacity = 1;
-    this.speechBubble.visible = true;
-  }
 
   addToScene(scene) {
-    scene.add(this.group);
+    this.renderer.addToScene(scene);
   }
 
   removeFromScene(scene) {
-    const textures = [
-      this.speechBubble?.material?.map,
-      this.thoughtBubble?.material?.map,
-      this.nameLabel?.material?.map,
-      this.statsLabel?.material?.map,
-    ].filter(Boolean);
-    scene.remove(this.group);
-    // Defer texture disposal to next frame so renderer isn't using them
-    if (textures.length > 0) {
-      requestAnimationFrame(() => textures.forEach(t => t.dispose()));
-    }
+    this.renderer.removeFromScene(scene);
   }
 
+  /** Distance to another entity in tiles */
   distanceTo(other) {
-    return Math.hypot(other.x - this.x, other.y - this.y);
+    return Grid.tileDist(this.x, this.y, other.x, other.y);
   }
 
   _isEnRouteToItem(world) {
@@ -615,7 +200,7 @@ export class Agent {
     if (this.health <= 0) {
       this.health = 0;
       this.dead = true;
-      this.mesh.material.opacity = 0.3;
+      this.renderer.setOpacity(0.3);
       // Attacker remembers the kill and loot
       if (attacker && !attacker.dead) {
         attacker.memory.push(`Killed ${this.name} who dropped ${this.coins} coins at (${Math.round(this.x)}, ${Math.round(this.y)})`);
@@ -740,13 +325,18 @@ export class Agent {
 
     try {
       const perception = world.getPerception(this);
-      const decision = await this.llm.decide(this.systemPrompt, perception, this.name, this.goal);
+      const decision = await this.llm.decide(this.systemPrompt, perception, this.name, this.goal, this.turnHistory, this.isNPC);
       if (decision) {
         console.log(`[LOG_LLM_OUTPUT][${new Date().toLocaleTimeString()}][${this.name}]`, JSON.stringify(decision));
       }
+      // Store turn in sliding window
+      this.turnHistory.push({ perception, decision: JSON.stringify(decision) });
+      if (this.turnHistory.length > this.maxTurnHistory) {
+        this.turnHistory.shift();
+      }
       this.lastDecision = decision;
       if (decision?.thought && world.showThoughts) {
-        this._showThought(decision.thought);
+        this.renderer.showThought(decision.thought);
       }
       this._executeDecision(decision, world);
     } catch (err) {
@@ -757,405 +347,14 @@ export class Agent {
   }
 
   _executeDecision(decision, world) {
-    if (!decision) return;
-    this.lastActionResult = null;
-
-    // Movement — convert grid coords to pixel if values are small (grid range)
-    if (decision.action === 'move' && decision.targetX != null && decision.targetY != null) {
-      let px = decision.targetX;
-      let py = decision.targetY;
-      // If coords look like grid values (within grid range), convert to pixel center
-      if (px <= GRID_COLS && py <= GRID_ROWS) {
-        const pixel = Grid.toPixel(px, py);
-        px = pixel.x;
-        py = pixel.y;
-      }
-      this.targetX = Math.max(this.radius, Math.min(world.width - this.radius, px));
-      this.targetY = Math.max(this.radius, Math.min(world.height - this.radius, py));
-      this.lastActionResult = { success: true, message: `Moving to ${Grid.toLabel(this.targetX, this.targetY)}` };
-    }
-
-    // Attack (ranged) — find target generically via world.findTarget
-    if (decision.action === 'attack' && decision.target) {
-      if (this.bullets <= 0) {
-        this.lastActionResult = { success: false, message: "No bullets! Use melee_attack (requires axe/hammer) or buy bullets." };
-      } else if (this.attackCooldownTimer > 0) {
-        this.lastActionResult = { success: false, message: 'Weapon still cooling down.' };
-      } else {
-        const found = world.findTarget(decision.target, this.x, this.y);
-        if (found) {
-          this.attack(found.entity.x, found.entity.y, world, found.entity);
-          this.lastActionResult = { success: true, message: `Shot at ${decision.target}` };
-        } else {
-          this.lastActionResult = { success: false, message: `Target "${decision.target}" not found nearby.` };
-        }
-      }
-    }
-    // Attack by coordinates
-    if (decision.action === 'attack' && !decision.target && decision.targetX != null && decision.targetY != null) {
-      this.attack(decision.targetX, decision.targetY, world);
-    }
-
-    // Melee attack — hit nearby target with axe or hammer
-    if (decision.action === 'melee_attack' || decision.action === 'melee') {
-      const meleeRange = this.radius + 30;
-      const weapon = this.hasAxe ? 'axe' : this.hasHammer ? 'hammer' : null;
-      if (!weapon) {
-        this.lastActionResult = { success: false, message: 'You have no axe or hammer! Buy one from shop or run away!' };
-      } else {
-        const dmg = weapon === 'axe' ? AXE_DAMAGE : HAMMER_DAMAGE;
-        const found = world.findTarget(decision.target || 'spider', this.x, this.y, meleeRange);
-
-        if (found && found.entity.takeDamage) {
-          found.entity.takeDamage(dmg, world, this);
-          const targetName = found.entity.name || found.kind;
-          if (found.entity.dead) {
-            world.eventLog.push({ type: `${found.kind}_kill`, killer: this.name, color: this.color, x: Math.round(found.entity.x), y: Math.round(found.entity.y) });
-            this.lastActionResult = { success: true, message: `Killed ${targetName} with ${weapon}!` };
-          } else {
-            this.lastActionResult = { success: true, message: `Hit ${targetName} with ${weapon} for ${dmg} dmg. Target HP: ${found.entity.health}` };
-          }
-        } else {
-          this.lastActionResult = { success: false, message: 'Nothing close enough to hit.' };
-        }
-        this.attackCooldownTimer = this.attackCooldown;
-      }
-    }
-
-    // Buy from shop — supports single item or array of items, or direct action name
-    const shopActions = ['buy', 'firepower_up', 'reach_up', 'bullet_speed_up', 'speed_up', 'max_health_up'];
-    if (decision.action === 'buy' || shopActions.includes(decision.action)) {
-      const items = decision.action === 'buy'
-        ? (decision.items || (decision.item ? [decision.item] : []))
-        : [decision.action];
-      for (const itemName of items) {
-        this._tryBuy(itemName, world);
-      }
-    }
-
-    // Send message — system routes it to the target agent
-    if ((decision.action === 'send_message' || decision.action === 'talk') && decision.to && decision.message) {
-      this.sendMessage(decision.to, decision.message, world);
-      this.lastActionResult = { success: true, message: `Sent message to ${decision.to}` };
-      // Optionally move while messaging
-      if (decision.targetX != null && decision.targetY != null) {
-        let px = decision.targetX, py = decision.targetY;
-        if (px <= GRID_COLS && py <= GRID_ROWS) {
-          const pixel = Grid.toPixel(px, py);
-          px = pixel.x; py = pixel.y;
-        }
-        this.targetX = Math.max(this.radius, Math.min(world.width - this.radius, px));
-        this.targetY = Math.max(this.radius, Math.min(world.height - this.radius, py));
-      }
-    }
-
-    // Update relationships — supports old format and new format
-    if (decision.setRelationships && typeof decision.setRelationships === 'object') {
-      for (const [name, rel] of Object.entries(decision.setRelationships)) {
-        this.relationships[name] = rel;
-      }
-    }
-    if (decision.setRelationship && decision.setRelationshipTo) {
-      this.relationships[decision.setRelationshipTo] = decision.setRelationship;
-    }
-
-    // Update goal
-    if (decision.setGoal != null) {
-      this.goal = decision.setGoal;
-    }
-    // Backward compat: if LLM sends setGoals, use high
-    if (decision.setGoals) {
-      this.goal = decision.setGoals.high || decision.setGoals.mid || decision.setGoals.low || '';
-    }
-
-    // Use a health pack from inventory
-    if (decision.action === 'use_healthpack') {
-      if (this.healthPacks > 0) {
-        this.healthPacks--;
-        this.health = Math.min(this.maxHealth, this.health + HEALTHPACK_HEAL);
-        this.lastActionResult = { success: true, message: `Healed ${HEALTHPACK_HEAL} HP. HP: ${this.health}` };
-      } else {
-        this.lastActionResult = { success: false, message: 'No healthpacks in inventory.' };
-      }
-    }
-
-    // Get apple from nearby apple tree
-    if (decision.action === 'get_apple') {
-      let found = null;
-      for (const item of world.items) {
-        if (item.type !== 'apple_tree' || item.apples <= 0) continue;
-        const dist = Math.hypot(item.x - this.x, item.y - this.y);
-        if (dist < TILE_SIZE) { found = item; break; }
-      }
-      if (found) {
-        found.apples--;
-        this.apples++;
-        this._updateStatsLabel();
-        this.lastActionResult = { success: true, message: `Picked apple (${found.apples} left on tree)` };
-      } else {
-        this.lastActionResult = { success: false, message: 'No apple tree nearby with apples.' };
-      }
-    }
-
-    // Eat apple — restore health
-    if (decision.action === 'eat_apple') {
-      if (this.apples > 0) {
-        this.apples--;
-        this.health = Math.min(this.maxHealth, this.health + APPLE_HEAL);
-        this._updateStatsLabel();
-        this.lastActionResult = { success: true, message: `Ate apple, healed ${APPLE_HEAL} HP. HP: ${this.health}` };
-      } else {
-        this.lastActionResult = { success: false, message: 'No apples in inventory.' };
-      }
-    }
-
-    // Grab a nearby grabbable item
-    if (decision.action === 'grab' || decision.action === 'get' || decision.action === 'take') {
-      const targetType = decision.item;
-      let found = null;
-      for (const item of world.items) {
-        if (!item.grabbable) continue;
-        if (targetType && item.type !== targetType) continue;
-        const dist = Math.hypot(item.x - this.x, item.y - this.y);
-        if (dist < TILE_SIZE) { found = item; break; }
-      }
-      if (found) {
-        const picked = found.onPickup(this);
-        if (picked !== false) {
-          found.removeFromScene(world.scene);
-          const idx = world.items.indexOf(found);
-          if (idx !== -1) world.items.splice(idx, 1);
-          this._updateStatsLabel();
-          this.lastActionResult = { success: true, message: `Grabbed ${found.type.replace(/_/g, ' ')}` };
-        }
-      } else {
-        this.lastActionResult = { success: false, message: `Nothing grabbable nearby${targetType ? ` (${targetType})` : ''}.` };
-      }
-    }
-
-    // Sell resources — "sell_<type>" or "sell" with item field
-    if (decision.action.startsWith('sell')) {
-      const sellType = decision.action === 'sell'
-        ? decision.item
-        : decision.action.slice(5); // "sell_wood" → "wood"
-      if (sellType) {
-        const amount = decision.amount || 1;
-        this._sell(sellType, amount, world);
-      }
-    }
-
-    // Give items to a nearby agent — supports "give" or "give_<type>"
-    if (decision.to && decision.amount > 0) {
-      let giveType = null;
-      if (decision.action === 'give') {
-        giveType = decision.item;
-      } else if (decision.action.startsWith('give_')) {
-        giveType = decision.action.slice(5); // "give_coins" → "coins"
-      }
-      if (giveType) {
-        this._give(decision.to, giveType, decision.amount, world);
-      }
-    }
-
-    // Trade with a nearby agent
-    if (decision.action === 'trade' && decision.to && decision.offer && decision.request) {
-      this._trade(decision.to, decision.offer, decision.request, world);
-    }
-
-    // Open treasure — must be near one and have a key
-    if (decision.action === 'open_treasure') {
-      let opened = false;
-      for (let i = world.items.length - 1; i >= 0; i--) {
-        const item = world.items[i];
-        if (item.type !== 'treasure') continue;
-        const dist = Math.hypot(item.x - this.x, item.y - this.y);
-        if (dist < TILE_SIZE) {
-          if (this.keys > 0) {
-            this.keys--;
-            this.coins += 10;
-            this.lastActionResult = { success: true, message: 'Opened treasure chest — found 10 coins!' };
-            item.removeFromScene(world.scene);
-            world.items.splice(i, 1);
-            opened = true;
-          } else {
-            this.lastActionResult = { success: false, message: 'Need a key to open treasure chest.' };
-          }
-          break;
-        }
-      }
-      if (!opened && !this.lastActionResult) {
-        this.lastActionResult = { success: false, message: 'No treasure chest nearby.' };
-      }
-    }
-
-    // Cut tree — start work action
-    if (decision.action === 'cut_tree') {
-      if (!this.hasAxe) {
-        this.lastActionResult = { success: false, message: 'Need an axe to cut trees! Buy one from the shop.' };
-      } else {
-        let found = null;
-        for (const item of world.items) {
-          if (item.type !== 'tree' || item.isCut) continue;
-          const dist = Math.hypot(item.x - this.x, item.y - this.y);
-          if (dist < TILE_SIZE) { found = item; break; }
-        }
-        if (found) {
-          // Cut tree and drop wood immediately
-          found.cutTree();
-          for (let i = 0; i < 3; i++) {
-            const angle = (Math.PI * 2 * i) / 3 + Math.random() * 0.5;
-            const d = 15 + Math.random() * 15;
-            world.addItem(new Item({
-              type: 'wood',
-              x: Math.max(10, Math.min(world.width - 10, found.x + Math.cos(angle) * d)),
-              y: Math.max(10, Math.min(world.height - 10, found.y + Math.sin(angle) * d)),
-            }));
-          }
-          // Agent stays busy for workDuration
-          this.workAction = { action: 'cut_tree', item: found, world, elapsed: 0 };
-          this.targetX = null; this.targetY = null;
-          this.vx = 0; this.vy = 0;
-          new Audio('/sounds/cut_tree.wav').play().catch(e => console.warn('[SOUND] cut_tree blocked:', e.message));
-          this.lastActionResult = { success: true, message: 'Cut down a tree! Got wood.' };
-        } else {
-          this.lastActionResult = { success: false, message: 'No tree nearby to cut.' };
-        }
-      }
-    }
-
-    // Break rock — start work action
-    if (decision.action === 'break_rock') {
-      if (!this.hasHammer) {
-        this.lastActionResult = { success: false, message: 'Need a hammer to break rocks! Buy one from the shop.' };
-      } else {
-        let found = null;
-        for (const item of world.items) {
-          if (item.type !== 'rock' || item.isBroken) continue;
-          const dist = Math.hypot(item.x - this.x, item.y - this.y);
-          if (dist < TILE_SIZE) { found = item; break; }
-        }
-        if (found) {
-          // Break rock and drop loot immediately
-          found.breakRock();
-          this.stones++;
-          if (found.hasGold) {
-            const gpos = Grid.snap(found.x, found.y);
-            world.addItem(new Item({ type: 'coin', x: gpos.x, y: gpos.y }));
-          }
-          found.removeFromScene(world.scene);
-          const idx = world.items.indexOf(found);
-          if (idx !== -1) world.items.splice(idx, 1);
-          // Agent stays busy for workDuration
-          this.workAction = { action: 'break_rock', item: null, world, elapsed: 0 };
-          this.targetX = null; this.targetY = null;
-          this.vx = 0; this.vy = 0;
-          new Audio('/sounds/hammer_rock.wav').play().catch(e => console.warn('[SOUND] hammer_rock blocked:', e.message));
-          this.lastActionResult = { success: true, message: found.hasGold ? 'Broke rock — found gold + 1 stone!' : 'Broke rock — got 1 stone.' };
-        } else {
-          this.lastActionResult = { success: false, message: 'No rock nearby to break.' };
-        }
-      }
-    }
-
-    // Place trap at current position
-    if (decision.action === 'place_trap') {
-      if (this.traps > 0) {
-        this.traps--;
-        const trap = new Item({
-          type: 'trap',
-          x: this.x,
-          y: this.y,
-          owner: this,
-          trapDamage: 40,
-        });
-        world.addItem(trap);
-      }
-    }
-
-    // Build house — requires wood + stones
-    if (decision.action === 'build_house') {
-      if (this.wood < HOUSE_WOOD_COST || this.stones < HOUSE_STONE_COST) {
-        const needs = [];
-        if (this.wood < HOUSE_WOOD_COST) needs.push(`${HOUSE_WOOD_COST} wood (have ${this.wood})`);
-        if (this.stones < HOUSE_STONE_COST) needs.push(`${HOUSE_STONE_COST} stones (have ${this.stones})`);
-        this.lastActionResult = { success: false, message: `Need ${needs.join(' and ')} to build.` };
-      } else {
-        this.wood -= HOUSE_WOOD_COST;
-        this.stones -= HOUSE_STONE_COST;
-        const house = new House({ x: this.x, y: this.y, owner: this });
-        world.addItem(house);
-        this._updateStatsLabel();
-        this.lastActionResult = { success: true, message: 'Built a house! Enter it to heal and stay safe.' };
-      }
-    }
-
-    // Enter house — must be near own house
-    if (decision.action === 'enter_house') {
-      let found = null;
-      for (const item of world.items) {
-        if (item.type !== 'house' || item.owner !== this) continue;
-        const dist = Math.hypot(item.x - this.x, item.y - this.y);
-        if (dist < TILE_SIZE) { found = item; break; }
-      }
-      if (found) {
-        if (found.enter(this)) {
-          this.insideHouse = found;
-          this.targetX = null;
-          this.targetY = null;
-          this.vx = 0;
-          this.vy = 0;
-          this.mesh.material.opacity = 0.3;
-          this.lastActionResult = { success: true, message: 'Entered house. Healing and safe from damage.' };
-        } else {
-          this.lastActionResult = { success: false, message: 'House is occupied.' };
-        }
-      } else {
-        this.lastActionResult = { success: false, message: 'No house nearby to enter.' };
-      }
-    }
-
-    // Exit house
-    if (decision.action === 'exit_house') {
-      if (this.insideHouse) {
-        this.insideHouse.exit();
-        this.insideHouse = null;
-        this.mesh.material.opacity = 1;
-        this.lastActionResult = { success: true, message: 'Left house.' };
-      } else {
-        this.lastActionResult = { success: false, message: 'Not inside a house.' };
-      }
-    }
-
-    // Save to memory
-    if (decision.addMemory) {
-      this.memory.push(decision.addMemory);
-      if (this.memory.length > 15) this.memory.shift();
-    }
-
-    // Update stress level
-    if (decision.stress != null) {
-      this.stress = Math.max(0, Math.min(10, Math.round(decision.stress)));
-    }
-
-    // Set instincts (LLM-programmed reflexes)
-    if (decision.setInstincts && Array.isArray(decision.setInstincts)) {
-      this.instincts = decision.setInstincts.filter(i => i.trigger && i.action);
-      console.log(`[INSTINCTS][${this.name}] Set ${this.instincts.length} instinct(s):`, this.instincts.map(i => i.trigger).join(', '));
-    }
-
-    // Idle
-    if (decision.action === 'idle') {
-      this.targetX = null;
-      this.targetY = null;
-      this.lastActionResult = { success: true, message: 'Waiting.' };
-    }
+    executeDecision(this, decision, world);
   }
 
   _tryBuy(itemName, world) {
     for (const item of world.items) {
       if (item.type !== 'shop') continue;
-      const dist = Math.hypot(item.x - this.x, item.y - this.y);
-      if (dist < this.awarenessRadius && item.shopInventory) {
+      const dist = Grid.tileDist(item.x, item.y, this.x, this.y);
+      if (dist <= this.awarenessRange && item.shopInventory) {
         const shopItem = item.shopInventory.find(i => i.name === itemName);
         if (!shopItem) continue;
         // Prevent buying duplicate unique items
@@ -1171,7 +370,7 @@ export class Agent {
           this.coins -= shopItem.price;
           this._applyUpgrade(shopItem.name);
           this.inventory.push(shopItem.name);
-          this._updateStatsLabel();
+      
           this.lastActionResult = { success: true, message: `Bought ${itemName} for ${shopItem.price} coins.` };
         } else {
           this.lastActionResult = { success: false, message: `Not enough coins for ${itemName} (need ${shopItem.price}, have ${this.coins}).` };
@@ -1186,7 +385,7 @@ export class Agent {
     const target = world.agents.find(a => a.name === targetName && !a.dead);
     if (!target) return;
     const dist = this.distanceTo(target);
-    if (dist > this.awarenessRadius) return;
+    if (dist > this.awarenessRange) return;
 
     const itemMap = {
       coins:       { prop: 'coins',       label: 'coin' },
@@ -1219,7 +418,7 @@ export class Agent {
     // Must be near a shop that has a sell_<type> entry
     const shop = world.items.find(i =>
       i.type === 'shop' && i.shopInventory &&
-      Math.hypot(i.x - this.x, i.y - this.y) <= this.awarenessRadius
+      Grid.tileDist(i.x, i.y, this.x, this.y) <= this.awarenessRange
     );
     if (!shop) {
       this.lastActionResult = { success: false, message: 'No shop nearby to sell.' };
@@ -1242,7 +441,7 @@ export class Agent {
     }
     this[prop] -= actual;
     this.coins += actual * sellEntry.price;
-    this._updateStatsLabel();
+
     this.lastActionResult = { success: true, message: `Sold ${actual} ${resourceType} for ${actual * sellEntry.price} coins.` };
   }
 
@@ -1271,7 +470,7 @@ export class Agent {
     const target = world.agents.find(a => a.name === targetName && !a.dead);
     if (!target) return;
     const dist = this.distanceTo(target);
-    if (dist > this.awarenessRadius) return;
+    if (dist > this.awarenessRange) return;
 
     const offerAmt = Math.min(offer.amount, this._getResource(offer.type));
     const requestAmt = Math.min(request.amount, target._getResource(request.type));
@@ -1320,7 +519,8 @@ export class Agent {
         this.stats.reach.level++;
         this.stats.reach.value += 50;
         this.awarenessRadius = this.stats.reach.value;
-        this._rebuildAwarenessRing();
+        this.awarenessRange = this.stats.reach.value / TILE_SIZE;
+        this.renderer.rebuildAwarenessRing();
         break;
       case 'bullet_speed_up':
         this.stats.bulletSpeed.level++;
@@ -1332,6 +532,9 @@ export class Agent {
         break;
       case 'trap':
         this.traps++;
+        break;
+      case 'animal_trap':
+        this.animalTraps++;
         break;
       case 'axe':
         this.hasAxe = true;
@@ -1372,49 +575,31 @@ export class Agent {
       else if (t === 'health_below_50') match = healthPct <= 0.5;
       // Combat triggers
       else if (t === 'spider_close') {
-        match = world.spiders.some(s => !s.dead && Math.hypot(s.x - this.x, s.y - this.y) < this.awarenessRadius * 0.4);
+        match = world.spiders.some(s => !s.dead && Grid.tileDist(s.x, s.y, this.x, this.y) < this.awarenessRange * 0.4);
       }
       else if (t === 'under_attack') match = this.needsReassess && healthPct < 1;
       else if (t === 'no_bullets') match = this.bullets <= 0;
       // Item triggers
       else if (t === 'coin_nearby') {
-        const coin = world.items.find(i => i.type === 'coin' && Math.hypot(i.x - this.x, i.y - this.y) < this.awarenessRadius);
+        const coin = world.items.find(i => i.type === 'coin' && Grid.tileDist(i.x, i.y, this.x, this.y) < this.awarenessRange);
         if (coin && isIdle) {
           match = true;
-          // Auto-fill targetX/Y for move actions
           if (instinct.action.action === 'move' && instinct.action.targetX == null) {
             instinct.action = { ...instinct.action, targetX: Math.round(coin.x), targetY: Math.round(coin.y) };
           }
         }
       }
       else if (t === 'item_nearby') {
-        match = isIdle && world.items.some(i => i.autoPickup && Math.hypot(i.x - this.x, i.y - this.y) < this.awarenessRadius);
+        match = isIdle && world.items.some(i => i.autoPickup && Grid.tileDist(i.x, i.y, this.x, this.y) < this.awarenessRange);
       }
       // Location triggers
       else if (t === 'at_shop') {
-        match = world.items.some(i => i.type === 'shop' && Math.hypot(i.x - this.x, i.y - this.y) <= this.radius + i.radius);
+        match = world.items.some(i => i.type === 'shop' && Grid.tileDist(i.x, i.y, this.x, this.y) <= 1.5);
       }
 
       if (match) return instinct;
     }
     return null;
-  }
-
-  _rebuildAwarenessRing() {
-    if (this.awarenessRing) {
-      this.group.remove(this.awarenessRing);
-      this.awarenessRing.geometry.dispose();
-      this.awarenessRing.material.dispose();
-    }
-    const ringGeo = new THREE.RingGeometry(this.awarenessRadius - 1, this.awarenessRadius, 64);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(this.color),
-      transparent: true,
-      opacity: 0.15,
-    });
-    this.awarenessRing = new THREE.Mesh(ringGeo, ringMat);
-    this.awarenessRing.position.z = 0.5;
-    this.group.add(this.awarenessRing);
   }
 
   update(dt, world) {
@@ -1423,7 +608,8 @@ export class Agent {
       return;
     }
 
-    // Health decay
+    // Health decay (NPCs don't decay)
+    if (this.isNPC) this.healthDecayTimer = 0;
     this.healthDecayTimer += dt;
     if (this.healthDecayTimer >= this.healthDecayInterval) {
       this.healthDecayTimer = 0;
@@ -1431,7 +617,7 @@ export class Agent {
       if (this.health <= 0) {
         this.health = 0;
         this.dead = true;
-        this.mesh.material.opacity = 0.3;
+        this.renderer.setOpacity(0.3);
         this._dropCoins(world);
         return;
       }
@@ -1449,33 +635,6 @@ export class Agent {
     const qy = Math.floor(this.y / 267); // 3 rows (800/267)
     this.visitedQuadrants.add(`${qx},${qy}`);
 
-    // Remember nearby shops & treasures
-    for (const item of world.items) {
-      const dist = Math.hypot(item.x - this.x, item.y - this.y);
-      if (dist > this.awarenessRadius) continue;
-
-      if (item.type === 'shop') {
-        const alreadyKnown = this.knownShops.some(
-          s => Math.hypot(s.x - item.x, s.y - item.y) < 10
-        );
-        if (!alreadyKnown) {
-          this.knownShops.push({ x: Math.round(item.x), y: Math.round(item.y) });
-        }
-      }
-      if (item.type === 'treasure') {
-        const alreadyKnown = this.knownTreasures.some(
-          t => Math.hypot(t.x - item.x, t.y - item.y) < 10
-        );
-        if (!alreadyKnown) {
-          this.knownTreasures.push({ x: Math.round(item.x), y: Math.round(item.y) });
-        }
-      }
-    }
-
-    // Clean up remembered treasures that no longer exist
-    this.knownTreasures = this.knownTreasures.filter(t =>
-      world.items.some(i => i.type === 'treasure' && Math.hypot(i.x - t.x, i.y - t.y) < 10)
-    );
 
     // Cooldown
     if (this.attackCooldownTimer > 0) {
@@ -1485,7 +644,7 @@ export class Agent {
     // Work action in progress (cut_tree, break_rock)
     if (this.workAction) {
       // Check for danger interrupts
-      const dangerSpider = world.spiders.some(s => !s.dead && Math.hypot(s.x - this.x, s.y - this.y) < this.awarenessRadius * 0.5);
+      const dangerSpider = world.spiders.some(s => !s.dead && Grid.tileDist(s.x, s.y, this.x, this.y) < this.awarenessRange * 0.5);
       const criticalHealth = (this.health / this.maxHealth) <= 0.25;
       if (dangerSpider || criticalHealth) {
         this.incomingMessages.push({ from: 'SYSTEM', message: 'Work interrupted — danger!' });
@@ -1507,7 +666,7 @@ export class Agent {
       if (triggered) {
         console.log(`[INSTINCT_FIRED][${this.name}] ${triggered.trigger} → ${triggered.action.action}`);
         this.lastDecision = { ...triggered.action, thought: triggered.action.thought || `instinct: ${triggered.trigger}` };
-        if (world.showThoughts) this._showThought(this.lastDecision.thought);
+        if (world.showThoughts) this.renderer.showThought(this.lastDecision.thought);
         this._executeDecision(this.lastDecision, world);
         this.decisionCooldown = this.decisionCooldownTime;
         return; // skip LLM call this frame
@@ -1520,7 +679,7 @@ export class Agent {
       const isIdle = this.targetX == null && this.targetY == null;
       const hasUrgency = this.needsReassess ||
         this.incomingMessages.length > 0 ||
-        world.spiders.some(s => !s.dead && Math.hypot(s.x - this.x, s.y - this.y) < this.awarenessRadius * 0.5);
+        world.spiders.some(s => !s.dead && Grid.tileDist(s.x, s.y, this.x, this.y) < this.awarenessRange * 0.5);
 
       if ((hasUrgency && this.decisionCooldown <= 0) || (isIdle && this.decisionCooldown <= 0)) {
         this.needsReassess = false;
@@ -1538,6 +697,14 @@ export class Agent {
       }
     } else {
       this.pendingStuckTimer = 0;
+    }
+
+    // NPCs don't move
+    if (this.isNPC) {
+      this.vx = 0;
+      this.vy = 0;
+      this.targetX = null;
+      this.targetY = null;
     }
 
     // Move toward target
@@ -1570,57 +737,9 @@ export class Agent {
     this.y = Math.max(this.radius, Math.min(world.height - this.radius, this.y));
 
 
-    // Update Three.js objects
-    this.group.position.set(this.x, this.y, 0);
-
-    // Direction indicator
-    if (Math.abs(this.vx) > 1 || Math.abs(this.vy) > 1) {
-      const angle = Math.atan2(this.vy, this.vx);
-      this.dirIndicator.position.set(
-        Math.cos(angle) * this.radius * 0.7,
-        Math.sin(angle) * this.radius * 0.7,
-        2.2
-      );
-    }
-
-    // Health bar
-    const healthPct = this.health / this.maxHealth;
-    this.healthBar.scale.x = Math.max(0, healthPct);
-    this.healthBar.position.x = -(1 - healthPct) * this.radius * 1.25;
-    if (healthPct > 0.5) this.healthBar.material.color.set(0x44ff44);
-    else if (healthPct > 0.25) this.healthBar.material.color.set(0xffaa00);
-    else this.healthBar.material.color.set(0xff4444);
-
-    // Stats label (coins + healthpacks)
-    this._updateStatsLabel();
-
-    // Tool icons
-    this._updateToolIcons();
-
-    // Speech bubble fade
-    if (this.speechBubble && this.speechBubble.visible) {
-      this.speechTimer -= dt;
-      if (this.speechTimer <= 0) {
-        this.speechBubble.visible = false;
-        this.speechBubble.material.opacity = 0;
-        this.currentSpeech = '';
-      } else if (this.speechTimer < 1.0) {
-        this.speechBubble.material.opacity = this.speechTimer;
-      }
-    }
-
-    // Thought bubble fade
-    if (this.thoughtBubble && this.thoughtBubble.visible) {
-      this.thoughtTimer -= dt;
-      if (this.thoughtTimer <= 0) {
-        this.thoughtBubble.visible = false;
-        this.thoughtBubble.material.opacity = 0;
-      } else if (this.thoughtTimer < 0.8) {
-        this.thoughtBubble.material.opacity = this.thoughtTimer / 0.8;
-      }
-    }
-
-    // Awareness ring visibility
-    this.awarenessRing.visible = world.showAwareness;
+    // Update all visuals via renderer
+    this.renderer.update(dt, world.showAwareness);
+    // Sync currentSpeech from renderer's speech bubble
+    this.currentSpeech = this.renderer.speechBubble.currentText;
   }
 }

@@ -4,6 +4,8 @@ import { Item } from './Item.js';
 import { Spider } from './Spider.js';
 import { Shop, DEFAULT_INVENTORY } from './Shop.js';
 import { Grid } from './Grid.js';
+import { Zone } from './Zone.js';
+import { Spawner } from './Spawner.js';
 
 const canvas = document.getElementById('game-canvas');
 const world = new World(canvas);
@@ -61,6 +63,7 @@ btnAddAgent.addEventListener('click', () => {
     : null;
 
   const enableInstincts = document.getElementById('agent-instincts').checked;
+  const isNPC = document.getElementById('agent-npc').checked;
 
   // Optional starting loadout
   const startX = document.getElementById('agent-start-x').value;
@@ -77,8 +80,12 @@ btnAddAgent.addEventListener('click', () => {
     spawnX = pos.x;
     spawnY = pos.y;
   } else {
-    spawnX = 100 + Math.random() * (world.width - 200);
-    spawnY = 100 + Math.random() * (world.height - 200);
+    // Spawn near center of map (within ~30% of center)
+    const cx = world.width / 2;
+    const cy = world.height / 2;
+    const spread = world.width * 0.15;
+    spawnX = cx + (Math.random() - 0.5) * spread * 2;
+    spawnY = cy + (Math.random() - 0.5) * spread * 2;
   }
 
   const agent = new Agent({
@@ -90,6 +97,7 @@ btnAddAgent.addEventListener('click', () => {
     temperature,
     friends,
     enableInstincts,
+    isNPC,
     systemPrompt: prompt,
     x: spawnX,
     y: spawnY,
@@ -191,7 +199,7 @@ function spawnRockCluster() {
   const cy = 80 + Math.random() * (world.height - 160);
   const spacing = 35;
   const goldIdx = Math.floor(Math.random() * 9);
-  for (let row = 0; row < 3; row++) {
+  for (let row = 0; row < 2; row++) {
     for (let col = 0; col < 2; col++) {
       world.addItem(new Item({
         type: 'rock',
@@ -255,9 +263,9 @@ toggleThoughts.addEventListener('change', (e) => {
   // Hide all existing thought bubbles when toggled off
   if (!e.target.checked) {
     for (const agent of world.agents) {
-      if (agent.thoughtBubble) {
-        agent.thoughtBubble.visible = false;
-        agent.thoughtBubble.material.opacity = 0;
+      if (agent.renderer?.thoughtBubble) {
+        agent.renderer.thoughtBubble.sprite.visible = false;
+        agent.renderer.thoughtBubble.sprite.material.opacity = 0;
       }
     }
   }
@@ -304,7 +312,11 @@ function updateInfoPanel() {
     `House: ${agent.insideHouse ? 'INSIDE (healing)' : 'not inside'}\n` +
     `Instincts: ${agent.enableInstincts ? (agent.instincts.length > 0 ? agent.instincts.map(i => i.trigger).join(', ') : 'none set') : 'disabled'}\n` +
     `Thought: ${agent.lastDecision?.thought || '...'}\n` +
-    `Saying: ${agent.currentSpeech || '(nothing)'}`;
+    `Saying: ${agent.currentSpeech || '(nothing)'}\n` +
+    `--- Memory (${agent.memory.length}/15) ---\n` +
+    (agent.memory.length > 0 ? agent.memory.map((m, i) => `  ${i + 1}. ${m}`).join('\n') : '  (empty)') + '\n' +
+    `--- Long-Term Memory (${agent.longTermMemory.length}/30) ---\n` +
+    (agent.longTermMemory.length > 0 ? agent.longTermMemory.map((m, i) => `  ${i + 1}. ${m}`).join('\n') : '  (empty)');
 }
 
 // Shop editor
@@ -546,3 +558,45 @@ for (let i = 0; i < 12; i++) {
 for (let c = 0; c < 2; c++) {
   spawnRockCluster();
 }
+
+// ── Zones ──
+const muds = new Zone({
+  name: 'The Muds',
+  col: 0, row: 16,
+  width: 30, height: 4,
+  sprite: '/images/mud.png',
+  enterMessage: 'You entered The Muds — a dangerous swamp where spiders spawn. Be careful!',
+});
+world.addZone(muds);
+
+// ── Spawners ──
+world.addSpawner(new Spawner({
+  zone: muds,
+  factory: (x, y) => new Spider({ x, y, zone: muds }),
+  add: (spider) => {
+    world.addSpider(spider);
+    addLog('World', `A spider crawled out of The Muds!`, '#660044');
+  },
+  interval: 60,
+  max: 5,
+}));
+
+// ── NPC Templates ──
+document.getElementById('btn-add-bullet-seller')?.addEventListener('click', () => {
+  const pos = Grid.toPixel(11, 16);
+  const npc = new Agent({
+    name: 'Bullet Bill',
+    model: 'google/gemini-2.5-flash-lite',
+    provider: 'openrouter',
+    color: '#ffd166',
+    temperature: 0.7,
+    isNPC: true,
+    systemPrompt: 'You are a bullet seller, and animal trap seller. You sell bullets and animal traps to adventurers. Tell people that bullets are great for spider hunting in the north. Be friendly and persuasive. If someone wants to buy, tell them to visit the shop. Add to your memories, previous sales, customer information, prices, things about your trades and shop',
+    x: pos.x,
+    y: pos.y,
+  });
+  npc.bullets = 99;
+  npc.animalTraps = 20;
+  world.addAgent(npc);
+  addLog('Bullet Bill', 'Set up shop near The Muds', '#ffd166');
+});

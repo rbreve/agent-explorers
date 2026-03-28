@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { Grid, TILE_SIZE, GRID_COLS, GRID_ROWS, WORLD_WIDTH, WORLD_HEIGHT } from './Grid.js';
+import { Zone } from './Zone.js';
 
 export class World {
   constructor(canvas) {
@@ -10,6 +11,8 @@ export class World {
     this.bullets = [];
     this.items = [];
     this.spiders = [];
+    this.zones = [];
+    this.spawners = [];
     this.paused = false;
     this.showAwareness = true;
     this.showThoughts = true;
@@ -109,10 +112,10 @@ export class World {
     this.raycaster.setFromCamera(this.mouse, this.camera);
 
     // Check agents first
-    const meshes = this.agents.map(a => a.mesh);
+    const meshes = this.agents.map(a => a.renderer.mesh);
     const intersects = this.raycaster.intersectObjects(meshes);
     if (intersects.length > 0) {
-      const agent = this.agents.find(a => a.mesh === intersects[0].object);
+      const agent = this.agents.find(a => a.renderer.mesh === intersects[0].object);
       this.selectedAgent = agent || null;
       this.selectedShop = null;
       return;
@@ -145,12 +148,26 @@ export class World {
     this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.mouse, this.camera);
+
+    // Check NPC agents
+    const npcMeshes = this.agents.filter(a => a.isNPC).map(a => a.renderer.mesh);
+    const npcHits = this.raycaster.intersectObjects(npcMeshes);
+    if (npcHits.length > 0) {
+      const npc = this.agents.find(a => a.isNPC && a.renderer.mesh === npcHits[0].object);
+      if (npc) {
+        this._dragging = { entity: npc, type: 'npc' };
+        this.canvas.style.cursor = 'grabbing';
+        return;
+      }
+    }
+
+    // Check shops
     const shopMeshes = this.items.filter(i => i.type === 'shop').map(i => i.mesh);
     const hits = this.raycaster.intersectObjects(shopMeshes);
     if (hits.length > 0) {
       const shop = this.items.find(i => i.type === 'shop' && i.mesh === hits[0].object);
       if (shop) {
-        this._dragging = shop;
+        this._dragging = { entity: shop, type: 'shop' };
         this.canvas.style.cursor = 'grabbing';
       }
     }
@@ -161,9 +178,10 @@ export class World {
     const pos = this._mouseToWorld(e);
     const x = Math.max(30, Math.min(this.width - 30, pos.x));
     const y = Math.max(30, Math.min(this.height - 30, pos.y));
-    this._dragging.x = x;
-    this._dragging.y = y;
-    this._dragging.group.position.set(x, y, 0);
+    const obj = this._dragging.entity;
+    obj.x = x;
+    obj.y = y;
+    obj.group.position.set(x, y, 0);
   }
 
   _onMouseUp() {
@@ -176,6 +194,7 @@ export class World {
   // Find a targetable entity by name/type from the perspective of a source entity.
   // Searches agents, spiders, and interactive items. Returns { entity, dist, kind } or null.
   // kind: 'agent' | 'spider' | 'item'
+  /** Find nearest entity by name. maxRange is in tiles. Returns { entity, dist (tiles), kind }. */
   findTarget(name, sourceX, sourceY, maxRange = Infinity) {
     if (!name) return null;
     const lname = name.toLowerCase();
@@ -186,8 +205,8 @@ export class World {
     for (const agent of this.agents) {
       if (agent.dead) continue;
       if (agent.name.toLowerCase() === lname) {
-        const d = Math.hypot(agent.x - sourceX, agent.y - sourceY);
-        if (d < bestDist) { best = { entity: agent, dist: d, kind: 'agent' }; bestDist = d; }
+        const d = Grid.tileDist(agent.x, agent.y, sourceX, sourceY);
+        if (d <= bestDist) { best = { entity: agent, dist: d, kind: 'agent' }; bestDist = d; }
       }
     }
 
@@ -195,16 +214,16 @@ export class World {
     for (const spider of this.spiders) {
       if (spider.dead) continue;
       if ('spider'.startsWith(lname) || lname.includes('spider')) {
-        const d = Math.hypot(spider.x - sourceX, spider.y - sourceY);
-        if (d < bestDist) { best = { entity: spider, dist: d, kind: 'spider' }; bestDist = d; }
+        const d = Grid.tileDist(spider.x, spider.y, sourceX, sourceY);
+        if (d <= bestDist) { best = { entity: spider, dist: d, kind: 'spider' }; bestDist = d; }
       }
     }
 
     // Search items by type (for attackable/interactive items)
     for (const item of this.items) {
       if (item.type.toLowerCase() === lname || item.type.toLowerCase().includes(lname)) {
-        const d = Math.hypot(item.x - sourceX, item.y - sourceY);
-        if (d < bestDist) { best = { entity: item, dist: d, kind: 'item' }; bestDist = d; }
+        const d = Grid.tileDist(item.x, item.y, sourceX, sourceY);
+        if (d <= bestDist) { best = { entity: item, dist: d, kind: 'item' }; bestDist = d; }
       }
     }
 
@@ -219,7 +238,7 @@ export class World {
       : this.items;
     for (const entity of sources) {
       if (entity.dead) continue;
-      const d = Math.hypot(entity.x - sourceX, entity.y - sourceY);
+      const d = Grid.tileDist(entity.x, entity.y, sourceX, sourceY);
       if (d <= range) results.push({ entity, dist: d, kind });
     }
     return results;
@@ -256,6 +275,24 @@ export class World {
     }
   }
 
+  addZone(zone) {
+    this.zones.push(zone);
+    zone.addToScene(this.scene);
+  }
+
+  /** Get zone name at a pixel position, or null */
+  getZoneAt(px, py) {
+    for (const zone of this.zones) {
+      const name = zone.getZoneAt(px, py);
+      if (name) return name;
+    }
+    return null;
+  }
+
+  addSpawner(spawner) {
+    this.spawners.push(spawner);
+  }
+
   addSpider(spider) {
     this.spiders.push(spider);
     spider.addToScene(this.scene);
@@ -277,7 +314,7 @@ export class World {
     for (const other of this.agents) {
       if (other === agent || other.dead) continue;
       const dist = agent.distanceTo(other);
-      if (dist <= agent.awarenessRadius) {
+      if (dist <= agent.awarenessRange) {
         nearby.push({
           name: other.name,
           x: Math.round(other.x),
@@ -298,16 +335,16 @@ export class World {
 
     const nearbyItems = [];
     for (const item of this.items) {
-      if (item.type === 'trap') continue; // traps are invisible to agents
+      if (item.type === 'trap' || item.type === 'animal_trap') continue; // traps are invisible
       if (item.type === 'tree' && item.isCut) continue; // cut trees are just stumps
       if (item.type === 'rock' && item.isBroken) continue; // broken rocks disappear
-      const dist = Math.hypot(item.x - agent.x, item.y - agent.y);
-      if (dist <= agent.awarenessRadius) {
+      const dist = Grid.tileDist(item.x, item.y, agent.x, agent.y);
+      if (dist <= agent.awarenessRange) {
         const entry = { type: item.type, x: Math.round(item.x), y: Math.round(item.y), dist: Grid.tileDistance(agent.x, agent.y, item.x, item.y) };
         if (item.type === 'shop' && item.shopInventory) {
           entry.shop = true;
           entry.shopName = item.shopName || 'Shop';
-          const atShop = dist <= agent.radius + item.radius;
+          const atShop = dist <= 1.5;
           if (atShop) {
             entry.atShop = true;
             entry.inventory = item.shopInventory.map(si => ({
@@ -348,8 +385,8 @@ export class World {
     const nearbySpiders = [];
     for (const spider of this.spiders) {
       if (spider.dead) continue;
-      const dist = Math.hypot(spider.x - agent.x, spider.y - agent.y);
-      if (dist <= agent.awarenessRadius) {
+      const dist = Grid.tileDist(spider.x, spider.y, agent.x, agent.y);
+      if (dist <= agent.awarenessRange) {
         nearbySpiders.push({ type: 'spider', x: Math.round(spider.x), y: Math.round(spider.y), dist: Grid.tileDistance(agent.x, agent.y, spider.x, spider.y), hp: spider.health });
       }
     }
@@ -369,7 +406,7 @@ export class World {
     const hw = this._getHealthWarning(agent);
 
     // Check if agent is at a shop
-    const atShopItem = this.items.find(i => i.type === 'shop' && Math.hypot(i.x - agent.x, i.y - agent.y) <= agent.radius + i.radius);
+    const atShopItem = this.items.find(i => i.type === 'shop' && Grid.tileDist(i.x, i.y, agent.x, agent.y) <= 1.5);
 
     // Helper: pixel → grid label
     const g = (px, py) => Grid.toLabel(px, py);
@@ -430,6 +467,8 @@ export class World {
     // YOU section
     lines.push('YOU:');
     lines.push(`  Position: ${g(agent.x, agent.y)}`);
+    const zoneName = this.getZoneAt(agent.x, agent.y);
+    if (zoneName) lines.push(`  Zone: ${zoneName}`);
     if (agent.insideHouse) lines.push('  Current Location: INSIDE YOUR HOUSE (healing, safe from damage)');
     else if (atShopItem) lines.push(`  Current Location: SHOP "${atShopItem.shopName || 'Shop'}"`);
     lines.push(`  HP: ${agent.health}/${agent.stats.maxHealth.value} (${Math.round(healthPct * 100)}%)`);
@@ -440,6 +479,7 @@ export class World {
     if (agent.apples > 0) extras.push(`Apples: ${agent.apples}`);
     if (agent.keys > 0) extras.push(`Keys: ${agent.keys}`);
     if (agent.traps > 0) extras.push(`Traps: ${agent.traps}`);
+    if (agent.animalTraps > 0) extras.push(`Animal Traps: ${agent.animalTraps}`);
     if (extras.length > 0) lines.push(`  ${extras.join(' | ')}`);
     const tools = [];
     if (agent.hasAxe) tools.push('Axe');
@@ -564,14 +604,20 @@ export class World {
       lines.push('');
     }
 
-    // Known locations
-    if (agent.knownShops.length > 0) {
-      lines.push(`KNOWN SHOPS: ${agent.knownShops.map(s => g(s.x,s.y)).join(', ')}`);
+    // Long-term memory
+    if (agent.longTermMemory.length > 0) {
+      lines.push('LONG-TERM MEMORY:');
+      for (const m of agent.longTermMemory) lines.push(`  - ${m}`);
+      lines.push('');
     }
     if (unexplored.length > 0 && unexplored.length < 12) {
       lines.push(`UNEXPLORED AREAS: ${unexplored.join(', ')}`);
     }
 
+    // Zones
+    if (this.zones.length > 0) {
+      lines.push(`ZONES: ${this.zones.map(z => z.getLabel()).join(', ')}`);
+    }
     lines.push(`WORLD GRID: ${GRID_COLS}x${GRID_ROWS} (coords 0-${GRID_COLS-1}, 0-${GRID_ROWS-1})`);
 
     return lines.join('\n');
@@ -581,25 +627,22 @@ export class World {
     const pct = agent.health / agent.maxHealth;
     const hasCoins = agent.coins >= 3;
     const nearbyHP = this.items.some(
-      i => i.type === 'health_pack' && Math.hypot(i.x - agent.x, i.y - agent.y) <= agent.awarenessRadius
+      i => i.type === 'health_pack' && Grid.tileDist(i.x, i.y, agent.x, agent.y) <= agent.awarenessRange
     );
     const nearbyShop = this.items.some(
-      i => i.type === 'shop' && Math.hypot(i.x - agent.x, i.y - agent.y) <= agent.awarenessRadius
+      i => i.type === 'shop' && Grid.tileDist(i.x, i.y, agent.x, agent.y) <= agent.awarenessRange
     );
-    const knowsShop = agent.knownShops.length > 0;
 
     if (pct <= 0.2) {
       if (agent.healthPacks > 0) return 'CRITICAL HEALTH LOW!';
       if (nearbyShop && hasCoins) return 'CRITICAL HEALTH LOW';
       if (nearbyHP) return 'CRITICAL, there is a health pack nearby';
-      if (knowsShop && hasCoins) return `CRITICAL! Rush to shop at ${Grid.toLabel(agent.knownShops[0].x, agent.knownShops[0].y)}!`;
       return 'CRITICAL! About to die. Find health!';
     }
     if (pct <= 0.4) {
       if (agent.healthPacks > 0) return 'WARNING: Health low.';
       if (nearbyShop && hasCoins) return 'WARNING: Health low.';
-      if (nearbyHP) return 'WARNING: Health low..';
-      if (knowsShop && hasCoins) return `WARNING: Shops at ${Grid.toLabel(agent.knownShops[0].x, agent.knownShops[0].y)}.`;
+      if (nearbyHP) return 'WARNING: Health low.';
       return 'WARNING: Health low. Find healing.';
     }
     if (pct <= 0.6) {
@@ -619,13 +662,26 @@ export class World {
       agent.update(dt, this);
     }
 
+    // Check zone enter/leave for all agents
+    for (const zone of this.zones) {
+      zone.checkAgents(this.agents);
+    }
+
+    // Tick spawners
+    for (const spawner of this.spawners) {
+      spawner.update(dt);
+    }
+
     // Update bullets
     for (let i = this.bullets.length - 1; i >= 0; i--) {
       const bullet = this.bullets[i];
       bullet.update(dt);
 
-      // Check bounds
+      // Check bounds — bullet missed
       if (bullet.x < 0 || bullet.x > this.width || bullet.y < 0 || bullet.y > this.height) {
+        if (bullet.owner && !bullet.owner.dead) {
+          bullet.owner.incomingMessages.push({ from: 'SYSTEM', message: 'Your attack missed! The bullet went out of range.' });
+        }
         bullet.removeFromScene(this.scene);
         this.bullets.splice(i, 1);
         continue;
@@ -711,6 +767,27 @@ export class World {
       spider.update(dt, this);
     }
 
+    // Spider-vs-animal trap collision
+    for (const spider of this.spiders) {
+      if (spider.dead) continue;
+      for (let i = this.items.length - 1; i >= 0; i--) {
+        const item = this.items[i];
+        if (item.type !== 'animal_trap') continue;
+        const dist = Math.hypot(spider.x - item.x, spider.y - item.y);
+        if (dist < spider.radius + item.radius) {
+          spider.takeDamage(item.trapDamage, this, item.owner);
+          if (item.owner && !item.owner.dead) {
+            item.owner.incomingMessages.push({
+              from: 'SYSTEM',
+              message: `Your animal trap caught a spider! Dealt ${item.trapDamage} damage.${spider.dead ? ' Spider killed!' : ''}`,
+            });
+          }
+          item.removeFromScene(this.scene);
+          this.items.splice(i, 1);
+        }
+      }
+    }
+
     // Spider-agent contact damage
     for (const spider of this.spiders) {
       if (spider.dead) continue;
@@ -722,7 +799,7 @@ export class World {
           agent.takeDamage(spider.damage, { name: 'spider' }, this);
           agent.incomingMessages.push({
             from: 'SYSTEM',
-            message: `A spider bit you for ${spider.damage} damage!`,
+            message: `A spider bit you for ${spider.damage} damage at ${Grid.toLabel(spider.x, spider.y)}!`,
           });
           spider.contactTimer = spider.contactCooldown;
         }

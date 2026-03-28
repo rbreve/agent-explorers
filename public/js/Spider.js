@@ -14,6 +14,9 @@ export class Spider {
     this.contactTimer = 0;
     this.dead = false;
 
+    // Zone bounds (pixel bounds the spider is confined to, or null for full world)
+    this.zone = config.zone || null;
+
     // Wander target
     this.targetX = this.x;
     this.targetY = this.y;
@@ -94,11 +97,18 @@ export class Spider {
 
     this.contactTimer = Math.max(0, this.contactTimer - dt);
 
+    // Bounds — zone or full world
+    const z = this.zone;
+    const minX = z ? z.x + this.radius : this.radius;
+    const maxX = z ? z.x + z.pixelWidth - this.radius : world.width - this.radius;
+    const minY = z ? z.y + this.radius : this.radius;
+    const maxY = z ? z.y + z.pixelHeight - this.radius : world.height - this.radius;
+
     // Wander
     this.wanderTimer -= dt;
     if (this.wanderTimer <= 0) {
-      this.targetX = Math.max(20, Math.min(world.width - 20, this.x + (Math.random() - 0.5) * 200));
-      this.targetY = Math.max(20, Math.min(world.height - 20, this.y + (Math.random() - 0.5) * 200));
+      this.targetX = Math.max(minX, Math.min(maxX, this.x + (Math.random() - 0.5) * 200));
+      this.targetY = Math.max(minY, Math.min(maxY, this.y + (Math.random() - 0.5) * 200));
       this.wanderTimer = 2 + Math.random() * 3;
     }
 
@@ -140,9 +150,9 @@ export class Spider {
       }
     }
 
-    // Clamp to world
-    this.x = Math.max(this.radius, Math.min(world.width - this.radius, this.x));
-    this.y = Math.max(this.radius, Math.min(world.height - this.radius, this.y));
+    // Clamp to bounds
+    this.x = Math.max(minX, Math.min(maxX, this.x));
+    this.y = Math.max(minY, Math.min(maxY, this.y));
 
     this.group.position.set(this.x, this.y, 0);
   }

@@ -9,6 +9,7 @@ export const DEFAULT_INVENTORY = [
   { name: 'speed_up',        price: 4,  description: '+25 movement speed' },
   { name: 'reach_up',        price: 3,  description: '+50 Will allow to see further away for coins and items' },
   { name: 'trap',            price: 4,  description: 'A hidden trap — place it to deal 40 damage to anyone who steps on it' },
+  { name: 'animal_trap',     price: 3,  description: 'A trap for spiders/beasts — deals 40 damage. Harmless to humans' },
   { name: 'axe',             price: 3, description: 'An axe — needed to cut down trees for wood' },
   { name: 'hammer',          price: 3,  description: 'A hammer — needed to break rocks' },
   { name: 'sell_wood',       price: 3,  description: 'Sell wood for 3 coins per wood' },

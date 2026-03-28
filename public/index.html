@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Agent Fighters</title>
+  <title>Agent Explorers</title>
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
     <div id="ui-panel">
       <div class="panel-header">
         <p class="panel-eyebrow">Arena Control</p>
-        <h2>Agent Fighters</h2>
+        <h2>Agent Explorers</h2>
         <p class="panel-subtitle">Spawn agents, tune their behavior, and shape the world from one clean control panel.</p>
       </div>
 
@@ -59,6 +59,7 @@
           <label for="agent-prompt">Behavior Prompt</label>
           <textarea id="agent-prompt" placeholder="Agent personality/goal..." rows="4">You are a hunter exploring the arena. Collect coins, hunt spiders, and survive.</textarea>
         </div>
+        <label class="checkbox-row"><input type="checkbox" id="agent-npc" /> NPC (stationary, serves players)</label>
         <label class="checkbox-row"><input type="checkbox" id="agent-instincts" /> Enable instincts</label>
         <details class="agent-options-accordion">
           <summary>Starting Loadout</summary>
@@ -115,6 +116,10 @@
         <button id="btn-add-appletree"><img class="btn-icon" src="/images/appletree.png" alt="">Add Apple Tree</button>
         <input type="text" id="note-text" placeholder="Note tip text..." />
         <button id="btn-add-note"><img class="btn-icon" src="/images/sign.png" alt="">Spawn Note</button>
+      </div>
+      <div class="section section-card">
+        <h3>NPCs</h3>
+        <button id="btn-add-bullet-seller"><img class="btn-icon" src="/images/bullet.png" alt="">Bullet Seller</button>
       </div>
       <div class="section section-card">
         <h3>World</h3>

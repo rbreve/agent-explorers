@@ -1,5 +1,5 @@
 {
-  "name": "agentfighers",
+  "name": "agent-explorers",
   "version": "1.0.0",
   "type": "module",
   "main": "server.js",
@@ -7,10 +7,10 @@
     "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": ["llm", "agents", "simulation", "ai", "autonomous"],
   "author": "",
-  "license": "ISC",
-  "description": "",
+  "license": "MIT",
+  "description": "A 2D arena where LLM-powered agents autonomously survive, fight, trade, and explore",
   "dependencies": {
     "dotenv": "^17.3.1",
     "express": "^5.2.1",

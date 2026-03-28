@@ -39,11 +39,16 @@ export class Grid {
     };
   }
 
-  // Distance in grid tiles between two pixel positions
+  // Manhattan distance in grid tiles between two pixel positions
   static tileDistance(x1, y1, x2, y2) {
     const g1 = Grid.toGrid(x1, y1);
     const g2 = Grid.toGrid(x2, y2);
     return Math.abs(g1.col - g2.col) + Math.abs(g1.row - g2.row);
+  }
+
+  // Euclidean distance in tiles (from pixel coords)
+  static tileDist(x1, y1, x2, y2) {
+    return Math.hypot(x1 - x2, y1 - y2) / TILE_SIZE;
   }
 
   // Clamp grid coords to valid range
