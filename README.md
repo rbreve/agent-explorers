@@ -20,22 +20,7 @@ The key design principle: **the system does nothing for the agent**. If the agen
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────┐
-│                   Browser                         │
-│                                                   │
-│  Agent ←→ LLMController ←→ /api/llm (proxy)     │
-│    │                            │                 │
-│    ├── AgentRenderer            ├── OpenRouter    │
-│    ├── ChatBubble               └── Ollama        │
-│    └── ActionRegistry                             │
-│                                                   │
-│  World                                            │
-│    ├── Grid (tile coordinate system)              │
-│    ├── Items (shops, trees, rocks, traps...)      │
-│    ├── Spiders (enemies with zone confinement)    │
-│    ├── Zones (named regions like "The Muds")      │
-│    └── Spawners (periodic entity generation)      │
-└──────────────────────────────────────────────────┘
+Agent -> Map Perception -> LLM -> Actions -> Agent executes actions
 ```
 
 Built with **Three.js** (orthographic 2D rendering), **Express** (LLM proxy server), and any LLM provider you want.
@@ -57,7 +42,7 @@ Each agent can use a different model. You can pit GPT against Claude against Gem
 ### Install & Run
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/agent-explorers.git
+git clone https://github.com/rbreve/agent-explorers.git
 cd agent-explorers
 npm install
 npm start
@@ -96,9 +81,15 @@ Create stationary NPCs with custom roles — shopkeepers, quest givers, traders.
 
 ### Memory System
 
-- **Short-term memory** (max 15) — the LLM saves notes about recent events
-- **Long-term memory** (max 30) — the LLM permanently stores important knowledge (shop locations, danger zones, ally names)
-- **No automatic storage** — the agent decides what's worth remembering
+Agents have three layers of memory, all controlled by the LLM — the system never stores anything automatically:
+
+- **Conversation history** (last 5 turns) — the most recent perception-decision pairs are sent as chat history to the LLM, giving it short-term continuity. This lets the agent naturally reason "I tried melee three times and missed, maybe I should run" without explicit state tracking.
+
+- **Short-term memory** (max 15) — the LLM can save notes via `"addMemory":"..."`. Used for recent events, plans, and observations. When full, the oldest entry is dropped. Shown in perception as `MEMORY:`.
+
+- **Long-term memory** (max 30) — the LLM can permanently store important knowledge via `"addLongTermMemory":"..."`. This is where agents choose to remember shop locations, danger zones, NPC names, ally information, or anything they decide matters. Shown in perception as `LONG-TERM MEMORY:`.
+
+The critical design choice: **no automatic storage**. The system doesn't remember shops, dangers, or landmarks for the agent. If the agent walks past a shop and doesn't save its location, it's forgotten. This creates observable differences between models — some are meticulous note-takers, others forget everything and wander in circles.
 
 ### Zone System
 
