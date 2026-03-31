@@ -6,6 +6,7 @@ import { Shop, DEFAULT_INVENTORY } from './Shop.js';
 import { Grid } from './Grid.js';
 import { Zone } from './Zone.js';
 import { Spawner } from './Spawner.js';
+import { SceneLoader } from './SceneLoader.js';
 
 const canvas = document.getElementById('game-canvas');
 const world = new World(canvas);
@@ -21,13 +22,43 @@ const toggleLogs = document.getElementById('toggle-logs');
 const agentInfoDiv = document.getElementById('agent-info');
 const agentLogsDiv = document.getElementById('agent-logs');
 
-// Load server config defaults
+// Load server config defaults and populate provider dropdown based on available keys
 fetch('/api/config').then(r => r.json()).then(cfg => {
   const ollamaUrlInput = document.getElementById('ollama-url');
   if (ollamaUrlInput) {
     ollamaUrlInput.value = cfg.ollamaUrl || 'http://localhost:11434';
   }
   if (cfg.ollamaModel) document.getElementById('agent-ollama-model').value = cfg.ollamaModel;
+
+  // Build provider dropdown based on which API keys are set
+  const providerSelect = document.getElementById('agent-provider');
+  const apiNotice = document.getElementById('api-key-notice');
+  const providers = [];
+  if (cfg.hasOpenRouterKey) providers.push({ value: 'openrouter', label: 'OpenRouter' });
+  if (cfg.hasOpenAIKey) providers.push({ value: 'openai', label: 'OpenAI' });
+  if (cfg.hasAnthropicKey) providers.push({ value: 'anthropic', label: 'Anthropic' });
+  providers.push({ value: 'ollama', label: 'Ollama' });
+
+  providerSelect.innerHTML = providers.map(p => `<option value="${p.value}">${p.label}</option>`).join('');
+
+  // Show notice only if config confirms no cloud API keys are configured
+  const hasAnyKey = cfg.hasOpenRouterKey || cfg.hasOpenAIKey || cfg.hasAnthropicKey;
+  apiNotice.style.display = (hasAnyKey || !('hasOpenRouterKey' in cfg)) ? 'none' : '';
+
+  // Enable/disable Create Random World based on available providers
+  const btnLoadScene = document.getElementById('btn-load-scene');
+  if (btnLoadScene) {
+    if (hasAnyKey) {
+      btnLoadScene.disabled = false;
+      btnLoadScene.title = '';
+    } else {
+      btnLoadScene.disabled = true;
+      btnLoadScene.title = 'Add an API key in your .env file first';
+    }
+  }
+
+  // Trigger change to populate model list for the default provider
+  providerSelect.dispatchEvent(new Event('change'));
 }).catch(() => {});
 
 // Provider toggle: show/hide model dropdown vs ollama model input
@@ -40,10 +71,30 @@ function getDefaultAgentColor(agentCount) {
   return AGENT_COLORS[agentCount % AGENT_COLORS.length];
 }
 
+const PROVIDER_MODELS = {
+  openrouter: [
+    'google/gemini-2.5-flash-lite', 'google/gemini-3.1-flash-lite-preview','openai/gpt-oss-120b', 
+    'minimax/minimax-m2.7', 'deepseek/deepseek-v3.2', 'x-ai/grok-4.1-fast',
+    'anthropic/claude-haiku-4.5', 'openai/gpt-4o-mini', 'openai/gpt-5-mini', 'minimax/minimax-m2.5',
+  ],
+  openai: [
+    'gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'gpt-4.1-nano', 'o4-mini',
+  ],
+  anthropic: [
+    'claude-haiku-4-5-20251001', 'claude-sonnet-4-6-20250514',
+  ],
+};
+
 agentProvider.addEventListener('change', () => {
-  const isOllama = agentProvider.value === 'ollama';
+  const prov = agentProvider.value;
+  const isOllama = prov === 'ollama';
   agentModelSelect.style.display = isOllama ? 'none' : '';
   agentOllamaModel.style.display = isOllama ? '' : 'none';
+
+  const models = PROVIDER_MODELS[prov];
+  if (models) {
+    agentModelSelect.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join('');
+  }
 });
 
 // Add agent
@@ -217,17 +268,7 @@ btnAddRocks.addEventListener('click', () => {
   addLog('World', 'A rock cluster appeared! One might contain gold...', '#888888');
 });
 
-// Spawn apple tree
-const btnAddAppleTree = document.getElementById('btn-add-appletree');
-btnAddAppleTree.addEventListener('click', () => {
-  const appleTree = new Item({
-    type: 'apple_tree',
-    x: 50 + Math.random() * (world.width - 100),
-    y: 50 + Math.random() * (world.height - 100),
-  });
-  world.addItem(appleTree);
-  addLog('World', 'An apple tree appeared!', '#ff4444');
-});
+
 
 // Spawn note
 const btnAddNote = document.getElementById('btn-add-note');
@@ -315,7 +356,7 @@ function updateInfoPanel() {
     `Saying: ${agent.currentSpeech || '(nothing)'}\n` +
     `--- Memory (${agent.memory.length}/15) ---\n` +
     (agent.memory.length > 0 ? agent.memory.map((m, i) => `  ${i + 1}. ${m}`).join('\n') : '  (empty)') + '\n' +
-    `--- Long-Term Memory (${agent.longTermMemory.length}/30) ---\n` +
+    `--- Long-Term Memory (${agent.longTermMemory.length}/15) ---\n` +
     (agent.longTermMemory.length > 0 ? agent.longTermMemory.map((m, i) => `  ${i + 1}. ${m}`).join('\n') : '  (empty)');
 }
 
@@ -431,6 +472,27 @@ function addLog(name, message, color, category = 'world') {
     agentLogsDiv.removeChild(agentLogsDiv.lastChild);
   }
 }
+
+// ── Scene Loader ──
+const sceneLoader = new SceneLoader(world, addLog);
+document.getElementById('btn-load-scene')?.addEventListener('click', async () => {
+  const provider = agentProvider.value;
+  const model = provider === 'ollama'
+    ? (agentOllamaModel.value || 'llama3')
+    : agentModelSelect.value;
+
+  const res = await fetch('/scenes/default.json');
+  const scene = await res.json();
+
+  // Override all agents to use the selected provider/model
+  for (const a of scene.agents) {
+    a.provider = provider;
+    a.model = model;
+  }
+
+  sceneLoader.load(scene);
+  agentLogsDiv.innerHTML = '';
+});
 
 // Track agent decisions for logging — one log per decision object
 let lastLoggedDecisions = new Map();

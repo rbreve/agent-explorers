@@ -161,13 +161,14 @@ export class World {
       }
     }
 
-    // Check shops
-    const shopMeshes = this.items.filter(i => i.type === 'shop').map(i => i.mesh);
-    const hits = this.raycaster.intersectObjects(shopMeshes);
+    // Check shops and notes
+    const draggableTypes = ['shop', 'note'];
+    const draggableMeshes = this.items.filter(i => draggableTypes.includes(i.type) && i.mesh).map(i => i.mesh);
+    const hits = this.raycaster.intersectObjects(draggableMeshes);
     if (hits.length > 0) {
-      const shop = this.items.find(i => i.type === 'shop' && i.mesh === hits[0].object);
-      if (shop) {
-        this._dragging = { entity: shop, type: 'shop' };
+      const item = this.items.find(i => draggableTypes.includes(i.type) && i.mesh === hits[0].object);
+      if (item) {
+        this._dragging = { entity: item, type: item.type };
         this.canvas.style.cursor = 'grabbing';
       }
     }
@@ -242,6 +243,39 @@ export class World {
       if (d <= range) results.push({ entity, dist: d, kind });
     }
     return results;
+  }
+
+  clearAll() {
+    for (const agent of [...this.agents]) {
+      agent.removeFromScene(this.scene);
+    }
+    this.agents = [];
+
+    for (const item of [...this.items]) {
+      item.removeFromScene(this.scene);
+    }
+    this.items = [];
+
+    for (const spider of [...this.spiders]) {
+      spider.removeFromScene(this.scene);
+    }
+    this.spiders = [];
+
+    for (const bullet of [...this.bullets]) {
+      bullet.removeFromScene(this.scene);
+    }
+    this.bullets = [];
+
+    for (const zone of [...this.zones]) {
+      zone.removeFromScene(this.scene);
+    }
+    this.zones = [];
+
+    this.spawners = [];
+    this._zonesByName = {};
+    this.selectedAgent = null;
+    this.selectedShop = null;
+    this.eventLog = [];
   }
 
   addAgent(agent) {
@@ -497,7 +531,7 @@ export class World {
       lines.push('');
     }
 
-    // Last action + result
+    // Last action + result + repetition detection
     if (agent.lastDecision) {
       const d = agent.lastDecision;
       let lastStr = `${d.action}`;
@@ -512,6 +546,19 @@ export class World {
         lines.push(`  Result: ${r.success ? 'SUCCESS' : 'FAILED'} — ${r.message}`);
       }
       if (d.thought) lines.push(`  Thought: "${d.thought}"`);
+
+      // Track consecutive repeated actions
+      const actionKey = `${d.action}|${d.target || ''}|${d.to || ''}|${d.item || ''}|${d.message || ''}`;
+      if (agent._lastActionKey === actionKey) {
+        agent._actionRepeatCount = (agent._actionRepeatCount || 1) + 1;
+      } else {
+        agent._lastActionKey = actionKey;
+        agent._actionRepeatCount = 1;
+      }
+      if (agent._actionRepeatCount >= 3) {
+        lines.push(`IMPORTANT: You have repeated "${d.action}" ${agent._actionRepeatCount} times in a row. Stop repeating and do something different. Look at your surroundings and pick a new action.`);
+      }
+
       lines.push('');
     }
 
@@ -765,6 +812,44 @@ export class World {
     // Update spiders
     for (const spider of this.spiders) {
       spider.update(dt, this);
+    }
+
+    // Push spiders and agents apart so they never overlap on the same tile
+    for (const spider of this.spiders) {
+      if (spider.dead) continue;
+      for (const agent of this.agents) {
+        if (agent.dead || agent.isNPC) continue;
+        const dx = agent.x - spider.x;
+        const dy = agent.y - spider.y;
+        const dist = Math.hypot(dx, dy);
+        const minDist = TILE_SIZE * 0.9;
+        if (dist < minDist && dist > 0) {
+          const push = (minDist - dist) / 2;
+          const nx = dx / dist;
+          const ny = dy / dist;
+          agent.x += nx * push;
+          agent.y += ny * push;
+          spider.x -= nx * push;
+          spider.y -= ny * push;
+        }
+      }
+      // Push spiders apart from each other
+      for (const other of this.spiders) {
+        if (other === spider || other.dead) continue;
+        const dx = other.x - spider.x;
+        const dy = other.y - spider.y;
+        const dist = Math.hypot(dx, dy);
+        const minDist = TILE_SIZE * 0.7;
+        if (dist < minDist && dist > 0) {
+          const push = (minDist - dist) / 2;
+          const nx = dx / dist;
+          const ny = dy / dist;
+          other.x += nx * push;
+          other.y += ny * push;
+          spider.x -= nx * push;
+          spider.y -= ny * push;
+        }
+      }
     }
 
     // Spider-vs-animal trap collision

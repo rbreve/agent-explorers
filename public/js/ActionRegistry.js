@@ -175,12 +175,14 @@ const ACTIONS = [
     match: (action) => action === 'send_message' || action === 'talk',
     exec(agent, decision, world) {
       if (!decision.to || !decision.message) return null;
-      // Prevent spamming the same message
-      const key = `${decision.to}:${decision.message}`;
-      if (agent._lastSentMessage === key) {
+      // Track recent messages per target to prevent spam
+      if (!agent._recentMessages) agent._recentMessages = [];
+      const key = `${decision.to}:${decision.message.toLowerCase().trim()}`;
+      if (agent._recentMessages.includes(key)) {
         return { success: false, message: `You already said that to ${decision.to}. Say something new or do something else.` };
       }
-      agent._lastSentMessage = key;
+      agent._recentMessages.push(key);
+      if (agent._recentMessages.length > 5) agent._recentMessages.shift();
       agent.sendMessage(decision.to, decision.message, world);
       applyMove(agent, decision, world);
       return { success: true, message: `Sent message to ${decision.to}` };
@@ -557,7 +559,7 @@ export function executeDecision(agent, decision, world) {
     const isDuplicate = agent.longTermMemory.some(m => m.toLowerCase() === mem.toLowerCase());
     if (!isDuplicate) {
       agent.longTermMemory.push(mem);
-      if (agent.longTermMemory.length > 30) agent.longTermMemory.shift();
+      if (agent.longTermMemory.length > 15) agent.longTermMemory.shift();
     }
   }
 

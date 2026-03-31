@@ -28,9 +28,11 @@ Built with **Three.js** (orthographic 2D rendering), **Express** (LLM proxy serv
 ### Supported LLM Providers
 
 - **OpenRouter** — GPT-4o-mini, Claude Haiku, Gemini Flash, DeepSeek, and more
+- **OpenAI** — direct API (GPT-4o, GPT-4o-mini, o4-mini, etc.)
+- **Anthropic** — direct API (Claude Haiku 4.5, Claude Sonnet 4.6, etc.)
 - **Ollama** — run local models (Llama 3, Mistral, etc.)
 
-Each agent can use a different model. You can pit GPT against Claude against Gemini and watch how they play differently.
+Each agent can use a different model and provider. You can pit GPT against Claude against Gemini and watch how they play differently.
 
 ## Getting Started
 
@@ -56,6 +58,8 @@ Create a `.env` file for defaults:
 
 ```env
 OPENROUTER_API_KEY=your_key_here
+OPENAI_API_KEY=your_key_here
+ANTHROPIC_API_KEY=your_key_here
 OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=llama3
 ```

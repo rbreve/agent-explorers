@@ -3,7 +3,7 @@
 body {
   background: #0a0a0a;
   color: #e0e0e0;
-  font-family: 'Courier New', monospace;
+  font-family: 'Inter', sans-serif  ;
   overflow: hidden;
 }
 
@@ -22,9 +22,7 @@ body {
   width: 380px;
   min-width: 380px;
   height: 100vh;
-  background:
-    radial-gradient(circle at top left, rgba(255, 102, 68, 0.1), transparent 34%),
-    linear-gradient(180deg, #171717 0%, #111111 100%);
+  background: #121c37;
   border-left: 1px solid #2d2d2d;
   padding: 18px;
   overflow-y: auto;
@@ -96,6 +94,23 @@ body {
 .section-card-primary {
   border-color: rgba(255, 102, 68, 0.24);
   background: linear-gradient(180deg, rgba(255, 102, 68, 0.08), rgba(255, 255, 255, 0.025));
+}
+
+.api-key-notice {
+  padding: 10px 14px;
+  border: 1px solid rgba(139, 50, 255, 0.3);
+  border-radius: 10px;
+  background: rgba(255, 180, 50, 0.08);
+  color: #e0b050;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.api-key-notice code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 11px;
 }
 
 .section-heading {
@@ -241,7 +256,7 @@ button:hover {
 
 .button-primary {
   background: linear-gradient(180deg, #ff7f5e 0%, #f05c34 100%);
-  color: #110a08;
+  color: #23673e;
   border-color: #ff8f72;
   font-weight: bold;
 }

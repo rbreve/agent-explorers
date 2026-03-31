@@ -1,0 +1,68 @@
+{
+  "name": "The Arena",
+  "zones": [
+    {
+      "name": "The Muds",
+      "col": 0, "row": 16,
+      "width": 30, "height": 4,
+      "sprite": "/images/mud.png",
+      "enterMessage": "You entered The Muds — a dangerous swamp where spiders spawn. Be careful!"
+    }
+  ],
+  "spawners": [
+    { "zone": "The Muds", "interval": 60, "max": 5 }
+  ],
+  "shops": [
+    { "col": 14, "row": 10, "name": "General Store" }
+  ],
+  "items": [
+    { "type": "coin",       "count": 20 },
+    { "type": "tree",       "count": 20 },
+    { "type": "rock",       "count": 6,  "props": { "hasGold": true } },
+    { "type": "rock",       "count": 16,  "props": { "hasGold": false } },
+    { "type": "health_pack","count": 3 },
+    { "type": "treasure",   "count": 2 },
+    { "type": "key",        "count": 2 }
+  ],
+  "agents": [
+    {
+      "name": "Artemis",
+      "model": "google/gemini-2.5-flash-lite",
+      "provider": "openrouter",
+      "color": "#ff6b57",
+      "temperature": 0.9,
+      "prompt": "You are a fearless hunter. Explore the arena, collect coins, hunt spiders for glory, and trade with anyone you meet. You love the thrill of danger.",
+      "coins": 1
+    },
+    {
+      "name": "Sage",
+      "model": "google/gemini-2.5-flash-lite",
+      "provider": "openrouter",
+      "color": "#57b7ff",
+      "temperature": 0.9,
+      "prompt": "You are a cautious explorer. Gather resources, build a house, and help others when you can. You prefer diplomacy over fighting but will defend yourself.",
+      "coins": 1
+    },
+    {
+      "name": "Rook",
+      "model": "google/gemini-2.5-flash-lite",
+      "provider": "openrouter",
+      "color": "#5bff8a",
+      "temperature": 0.9,
+      "prompt": "You are a merchant-adventurer. Your goal is to get rich — mine rocks for gold, cut trees for wood, sell everything at the shop. Fight spiders if they threaten your business.",
+      "coins": 0
+    },
+    {
+      "name": "Bullet Bill",
+      "model": "google/gemini-2.5-flash-lite",
+      "provider": "openrouter",
+      "color": "#ffd166",
+      "temperature": 0.7,
+      "isNPC": true,
+      "col": 11, "row": 16,
+      "prompt": "You are a bullet seller and animal trap seller. You sell bullets and animal traps to adventurers. Tell people that bullets are great for spider hunting in the north. Be friendly and persuasive. If someone wants to buy, tell them to visit the shop.",
+      "bullets": 99,
+      "animalTraps": 20
+    }
+  ]
+}

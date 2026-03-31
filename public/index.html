@@ -16,19 +16,24 @@
         <p class="panel-subtitle">Spawn agents, tune their behavior, and shape the world from one clean control panel.</p>
       </div>
 
+      <div id="api-key-notice" class="api-key-notice" style="display:none">
+        No API keys configured. Add keys to your <code>.env</code> file: <code>OPENROUTER_API_KEY</code>, <code>OPENAI_API_KEY</code>, or <code>ANTHROPIC_API_KEY</code>
+      </div>
+
+      <div class="section section-card">
+        <h3>Quick Start</h3>
+        <button id="btn-load-scene" class="button-primary" disabled title="Add an API key in your .env file first">Create Random World</button>
+      </div>
+
       <div class="section section-card section-card-primary">
         <div class="section-heading">
           <h3>Create Agent</h3>
           <span class="section-badge">AI</span>
         </div>
-        <div class="field-group">
-          <label for="agent-name">Agent Name</label>
-          <input type="text" id="agent-name" placeholder="Agent name" />
-        </div>
+
         <div class="field-group">
           <label for="agent-provider">Provider</label>
           <select id="agent-provider">
-            <option value="openrouter">OpenRouter</option>
             <option value="ollama">Ollama</option>
           </select>
         </div>
@@ -54,6 +59,10 @@
         <div class="field-group">
           <label for="agent-temperature">Temperature</label>
           <input type="number" id="agent-temperature" value="0.9" min="0" max="2" step="0.1" />
+        </div>
+        <div class="field-group">
+          <label for="agent-name">Agent Name</label>
+          <input type="text" id="agent-name" placeholder="Agent name" />
         </div>
         <div class="field-group">
           <label for="agent-prompt">Behavior Prompt</label>
@@ -113,7 +122,6 @@
         <button id="btn-add-tree"><img class="btn-icon" src="/images/world/tree.png" alt="">Add Tree</button>
         <button id="btn-add-axe"><img class="btn-icon" src="/images/axe.png" alt="">Add Axe</button>
         <button id="btn-add-rocks"><img class="btn-icon" src="/images/rock.png" alt="">Add Rock Cluster</button>
-        <button id="btn-add-appletree"><img class="btn-icon" src="/images/appletree.png" alt="">Add Apple Tree</button>
         <input type="text" id="note-text" placeholder="Note tip text..." />
         <button id="btn-add-note"><img class="btn-icon" src="/images/sign.png" alt="">Spawn Note</button>
       </div>
@@ -149,6 +157,8 @@
       </div>
     </div>
     <input type="hidden" id="api-key" value="" />
+    <input type="hidden" id="openai-api-key" value="" />
+    <input type="hidden" id="anthropic-api-key" value="" />
     <input type="hidden" id="ollama-url" value="http://localhost:11434" />
   </div>
   <script type="importmap">

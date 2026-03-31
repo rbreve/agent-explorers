@@ -47,7 +47,7 @@ Optional fields you can add to ANY action:
 - "setRelationships":{"agent_name":"ally/enemy/neutral"} — track how you feel about agents.
 - "setGoal":"your current goal" — when you evaluate what is most important to do after seeing the perception, set your current objective. Focus on ONE thing at a time. Clear it (set to "") when completed.
 - "addMemory":"short note" — save a short-term note (max 15, oldest dropped). For recent events, plans, observations.
-- "addLongTermMemory":"important info" — permanently store important knowledge (max 30). You decide what matters: shop locations, danger zones, NPC locations, landmarks, useful facts. Only store things you'll need later.
+- "addLongTermMemory":"important info" — permanently store important knowledge (max 15). You decide what matters: shop locations, danger zones, NPC locations, landmarks, useful facts. Only store things you'll need later. Keep it short and concise.
 - "setInstincts":[{"trigger":"trigger_name","action":{...}}] — program instant reflexes that fire without thinking. Available triggers: health_below_20, health_below_50, spider_close, under_attack, no_bullets, coin_nearby, item_nearby, at_shop. The action is any valid action object. These fire instantly when the condition is met — like muscle memory. Set to [] to clear all instincts.
 
 IMPORTANT: If MESSAGES appears in your perception, another agent is talking to you. You MUST acknowledge or reply using send_message before doing anything else. Ignoring messages is rude and breaks alliances.
@@ -77,7 +77,7 @@ WHEN an agent gives you coins, give him the items you sell at the price you will
 - {"action":"sell_<type>","amount":n,"thought":"why"} — sell resources (e.g. sell_wood). Must have inventory.
 
 - "addMemory":"useful information to remember about you as an NPC" — save information for future turns (max 15).
-- "addLongTermMemory":"important info" — permanently store important knowledge (max 30). You decide what matters: people, traded items, prices, customers..
+- "addLongTermMemory":"important info" — permanently store important knowledge (max 15). You decide what matters: people, traded items, prices, customers..
 
 
 IMPORTANT: If MESSAGES appears in your perception, someone is talking to you. You MUST reply using send_message. Stay in character.
@@ -93,7 +93,12 @@ export class LLMController {
   }
 
   async decide(personality, perception, agentName, goals, turnHistory = [], isNPC = false) {
-    const apiKey = document.getElementById('api-key')?.value || '';
+    const apiKeyMap = {
+      openrouter: document.getElementById('api-key')?.value || '',
+      openai: document.getElementById('openai-api-key')?.value || '',
+      anthropic: document.getElementById('anthropic-api-key')?.value || '',
+    };
+    const apiKey = apiKeyMap[this.provider] || document.getElementById('api-key')?.value || '';
 
     const template = isNPC ? NPC_TEMPLATE : SYSTEM_TEMPLATE;
     const systemPrompt = template
@@ -108,59 +113,68 @@ export class LLMController {
     }
     messages.push({ role: 'user', content: perception });
 
-    try {
-      const controller = new AbortController();
-      const timeoutMs = this.provider === 'ollama' ? 30000 : 15000;
-      const timeout = setTimeout(() => controller.abort(), timeoutMs);
-      const res = await fetch('/api/llm', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          apiKey,
-          agentName,
-          model: this.model,
-          temperature: this.temperature,
-          provider: this.provider,
-          ollamaUrl: this.ollamaUrl,
-          logPerception: document.getElementById('toggle-perception-log')?.checked || false,
-          messages,
-        }),
-      });
+    const isReasoning = /\bo[1-9]|gpt-oss|deepseek.*r1|qwq/i.test(this.model);
+    const timeoutMs = this.provider === 'ollama' ? 30000 : isReasoning ? 60000 : 15000;
+    const maxAttempts = 2; // retry once on empty content
 
-      clearTimeout(timeout);
-      const data = await res.json();
-      if (data.error) {
-        console.error(`[LLM_ERROR][${this.provider}/${this.model}]`, JSON.stringify(data.error));
-        return { action: 'idle', thought: "I'm stuck, my brain is not working..." };
-      }
-
-      let content = data.choices?.[0]?.message?.content;
-      if (!content) {
-        console.error(`[LLM_ERROR][${this.provider}/${this.model}] Empty content:`, JSON.stringify(data));
-        return { action: 'idle', thought: "I'm stuck, my brain is not working..." };
-      }
-
-      // Strip markdown code fences (```json ... ```)
-      content = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '');
-
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        return JSON.parse(content);
-      } catch {
-        const match = content.match(/\{[\s\S]*?\}(?=[^}]*$)/);
-        if (match) {
-          try { return JSON.parse(match[0]); } catch {}
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        const res = await fetch('/api/llm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            apiKey,
+            agentName,
+            model: this.model,
+            temperature: this.temperature,
+            provider: this.provider,
+            ollamaUrl: this.ollamaUrl,
+            logPerception: document.getElementById('toggle-perception-log')?.checked || false,
+            messages,
+          }),
+        });
+
+        clearTimeout(timeout);
+        const data = await res.json();
+        if (data.error) {
+          console.error(`[LLM_ERROR][${this.provider}/${this.model}]`, JSON.stringify(data.error));
+          return { action: 'idle', thought: "I'm stuck, my brain is not working..." };
         }
-        const braceMatch = content.match(/\{[^{}]*\}/);
-        if (braceMatch) {
-          try { return JSON.parse(braceMatch[0]); } catch {}
+
+        let content = data.choices?.[0]?.message?.content;
+        if (!content) {
+          if (attempt < maxAttempts) {
+            console.warn(`[LLM_RETRY][${this.provider}/${this.model}] Empty content, retrying (${attempt}/${maxAttempts})...`);
+            continue;
+          }
+          console.error(`[LLM_ERROR][${this.provider}/${this.model}] Empty content after ${maxAttempts} attempts`);
+          return { action: 'idle', thought: "I'm stuck, my brain is not working..." };
         }
-        console.error(`[LLM_ERROR][${this.provider}/${this.model}] Unparseable:`, content.slice(0, 300));
+
+        // Strip markdown code fences (```json ... ```)
+        content = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '');
+
+        try {
+          return JSON.parse(content);
+        } catch {
+          const match = content.match(/\{[\s\S]*?\}(?=[^}]*$)/);
+          if (match) {
+            try { return JSON.parse(match[0]); } catch {}
+          }
+          const braceMatch = content.match(/\{[^{}]*\}/);
+          if (braceMatch) {
+            try { return JSON.parse(braceMatch[0]); } catch {}
+          }
+          console.error(`[LLM_ERROR][${this.provider}/${this.model}] Unparseable:`, content.slice(0, 300));
+          return { action: 'idle', thought: "I'm stuck, my brain is not working..." };
+        }
+      } catch (err) {
+        console.error(`[LLM_ERROR][${this.provider}/${this.model}] Fetch failed:`, err.message);
         return { action: 'idle', thought: "I'm stuck, my brain is not working..." };
       }
-    } catch (err) {
-      console.error(`[LLM_ERROR][${this.provider}/${this.model}] Fetch failed:`, err.message);
-      return { action: 'idle', thought: "I'm stuck, my brain is not working..." };
     }
   }
 
